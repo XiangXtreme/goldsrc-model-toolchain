@@ -44,6 +44,7 @@ def inspect_indexed_bmp(
     path: Path | str,
     *,
     modes: list[str] | tuple[str, ...] = (),
+    require_model_dimensions: bool = True,
 ) -> dict:
     resolved = Path(path).expanduser().resolve()
     data = resolved.read_bytes()
@@ -67,7 +68,7 @@ def inspect_indexed_bmp(
         raise TextureError(f"GoldSrc texture must be uncompressed: {resolved.name}")
     if width <= 0 or height == 0 or width > 512 or abs(height) > 512:
         raise TextureError(f"GoldSrc texture dimensions must be 1..512: {resolved.name}")
-    if width % 16 or abs(height) % 16:
+    if require_model_dimensions and (width % 16 or abs(height) % 16):
         raise TextureError(f"GoldSrc texture dimensions must be multiples of 16: {resolved.name}")
     if palette_entries != 256 or palette_end > pixel_offset or pixel_offset > len(data):
         raise TextureError(f"GoldSrc texture requires a complete 256-color palette: {resolved.name}")

@@ -1,4 +1,4 @@
-GoldSrc Model Toolchain 1.1.0 upstream notices
+GoldSrc Model Toolchain 1.2.0 upstream notices
 
 - SourceIO GoldSrc MDL v10 parser/reconstruction logic
   Copyright (c) 2020 REDxEYE

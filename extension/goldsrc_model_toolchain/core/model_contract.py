@@ -36,6 +36,18 @@ class ContractError(ValueError):
         super().__init__("invalid model contract:\n- " + "\n- ".join(self.errors))
 
 
+def effective_texture_modes(texture: dict[str, Any]) -> list[str]:
+    """Return explicit modes plus deterministic legacy filename-set flags."""
+
+    modes = list(texture.get("modes", []))
+    name = Path(str(texture.get("name", ""))).name.casefold()
+    if name.startswith("chrome_"):
+        for mode in ("chrome", "flatshade"):
+            if mode not in modes:
+                modes.append(mode)
+    return modes
+
+
 def _is_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value))
 
@@ -164,7 +176,7 @@ def normalize_contract(value: dict[str, Any]) -> dict[str, Any]:
     contract.setdefault("version", CONTRACT_VERSION)
     contract.setdefault("target_profile", "half-life-cs")
     contract.setdefault("scale", 1.0)
-    for key in ("bones", "bodies", "bodygroups", "textures", "skin_families", "sequences", "hitboxes", "attachments", "controllers"):
+    for key in ("bones", "bone_renames", "bodies", "bodygroups", "textures", "skin_families", "sequences", "hitboxes", "attachments", "controllers"):
         contract.setdefault(key, [])
     model_name = contract.get("model_name", "model.mdl")
     stem = Path(str(model_name)).stem or "model"
@@ -250,6 +262,54 @@ def validate_contract(
     if not bone_names:
         errors.append("at least one bone is required, including for static models")
 
+    bone_renames = contract["bone_renames"]
+    rename_sources: set[str] = set()
+    rename_targets: set[str] = set()
+    if not isinstance(bone_renames, list):
+        errors.append("bone_renames must be a list")
+        bone_renames = []
+    for index, rename in enumerate(bone_renames):
+        label = f"bone_renames[{index}]"
+        if not isinstance(rename, dict):
+            errors.append(f"{label} must be an object")
+            continue
+        source = rename.get("source")
+        target = rename.get("target")
+        if not isinstance(source, str) or not source.strip():
+            errors.append(f"{label}.source must be a non-empty bone name")
+            continue
+        if not isinstance(target, str) or not target.strip():
+            errors.append(f"{label}.target must be a non-empty bone name")
+            continue
+        source_key, target_key = source.casefold(), target.casefold()
+        if source_key == target_key:
+            errors.append(f"{label} may not rename a bone to itself")
+        if source_key in rename_sources:
+            errors.append(f"duplicate bone rename source: {source}")
+        if target_key in rename_targets:
+            errors.append(f"duplicate bone rename target: {target}")
+        if source_key in bone_names:
+            errors.append(f"bone rename source conflicts with a final contract bone: {source}")
+        if target_key not in bone_names:
+            errors.append(f"bone rename target is absent from final contract bones: {target}")
+        rename_sources.add(source_key)
+        rename_targets.add(target_key)
+    overlap = sorted(rename_sources & rename_targets)
+    if overlap:
+        errors.append(f"bone rename chains or cycles are not supported: {', '.join(overlap)}")
+
+    compatibility = contract.get("compatibility")
+    if compatibility is not None:
+        if not isinstance(compatibility, dict):
+            errors.append("compatibility must be an object")
+        else:
+            unknown = sorted(set(compatibility) - {"role", "baseline_mdl"})
+            if unknown:
+                errors.append(f"unsupported compatibility fields: {', '.join(unknown)}")
+            if compatibility.get("role") not in {"player", "npc"}:
+                errors.append("compatibility.role must be player or npc")
+            _safe_relative(compatibility.get("baseline_mdl"), "compatibility.baseline_mdl", errors, suffix=".mdl")
+
     source_paths: list[tuple[str, str, bool]] = []
     body_names = _unique_names(contract["bodies"], "bodies", errors)
     for index, body in enumerate(contract["bodies"]):
@@ -307,6 +367,12 @@ def validate_contract(
         modes = texture.setdefault("modes", [])
         if not isinstance(modes, list) or len(modes) != len(set(modes)) or any(mode not in TEXTURE_MODES for mode in modes):
             errors.append(f"texture {name or index} has unsupported modes")
+        else:
+            effective_modes = effective_texture_modes(texture)
+            if contract["target_profile"] == "half-life-cs" and "fullbright" in effective_modes:
+                errors.append(f"texture {name or index} uses Sven/Xash3D-only fullbright in half-life-cs profile")
+            if contract["target_profile"] == "half-life-cs" and "chrome" in effective_modes and (width, height) != (64, 64):
+                errors.append(f"texture {name or index} must be 64x64 for Half-Life/Counter-Strike chrome")
 
     families = contract["skin_families"]
     if families:
@@ -419,6 +485,19 @@ def validate_contract(
     if require_files and root is None:
         errors.append("artifact_dir is required when require_files=true")
     if require_files and root:
+        compatibility = contract.get("compatibility")
+        if isinstance(compatibility, dict) and isinstance(compatibility.get("baseline_mdl"), str):
+            baseline_path = (root / compatibility["baseline_mdl"]).resolve()
+            if root not in baseline_path.parents:
+                errors.append("compatibility.baseline_mdl escapes artifact directory")
+            elif not baseline_path.is_file():
+                errors.append(f"compatibility.baseline_mdl is missing: {compatibility['baseline_mdl']}")
+            else:
+                try:
+                    from .mdl_v10 import inspect_mdl
+                    inspect_mdl(baseline_path)
+                except (OSError, ValueError) as exc:
+                    errors.append(f"compatibility.baseline_mdl is not a valid MDL v10: {exc}")
         revision = contract.get("intent", {}).get("revision") if isinstance(contract.get("intent"), dict) else None
         if isinstance(revision, dict) and isinstance(revision.get("baseline_report"), str):
             baseline_path = (root / revision["baseline_report"]).resolve()
@@ -468,13 +547,23 @@ def validate_contract(
         missing_materials = referenced_materials - texture_names
         for material in sorted(missing_materials):
             errors.append(f"SMD material is absent from textures: {material}")
+        rename_map = {
+            item["source"].casefold(): item["target"].casefold()
+            for item in bone_renames
+            if isinstance(item, dict) and isinstance(item.get("source"), str) and isinstance(item.get("target"), str)
+        }
+
+        def canonical_bone_name(name: str) -> str:
+            key = name.casefold()
+            return rename_map.get(key, key)
+
         expected_bones = {(item["name"].casefold(), item.get("parent").casefold() if isinstance(item.get("parent"), str) else None) for item in bones if isinstance(item, dict) and isinstance(item.get("name"), str)}
         for label, document in documents:
-            id_to_name = {bone.index: bone.name.casefold() for bone in document.bones}
+            id_to_name = {bone.index: canonical_bone_name(bone.name) for bone in document.bones}
             # Source Tools emits this helper node in SMD skeleton blocks, while
             # StudioMDL excludes it from the compiled GoldSrc bone table.
             actual = {
-                (bone.name.casefold(), id_to_name.get(bone.parent))
+                (canonical_bone_name(bone.name), id_to_name.get(bone.parent))
                 for bone in document.bones
                 if bone.name.casefold() != "blender_implicit"
             }
@@ -534,6 +623,8 @@ def render_qc(contract: dict[str, Any]) -> str:
         _box_line("bbox", contract["bounds"]["bbox"]),
         _box_line("cbox", contract["bounds"]["cbox"]),
     ]
+    for rename in contract["bone_renames"]:
+        lines.append(f'$renamebone "{rename["source"]}" "{rename["target"]}"')
     for body in contract["bodies"]:
         lines.append(f'$body "{body["name"]}" "{_quoted_source(body["source"])}"')
     for group in contract["bodygroups"]:
@@ -546,9 +637,13 @@ def render_qc(contract: dict[str, Any]) -> str:
         for family in contract["skin_families"]:
             lines.append("    { " + " ".join(f'"{name}"' for name in family) + " }")
         lines.append("}")
-    for texture in contract["textures"]:
-        for mode in texture.get("modes", []):
-            lines.append(f'$texrendermode "{texture["name"]}" {mode}')
+    texture_mode_lines = [
+        (mode, f'$texrendermode "{texture["name"]}" {mode}')
+        for texture in contract["textures"]
+        for mode in texture.get("modes", [])
+    ]
+    lines.extend(line for mode, line in texture_mode_lines if mode != "masked")
+    lines.extend(line for mode, line in texture_mode_lines if mode == "masked")
     for controller in contract["controllers"]:
         lines.append(f'$controller {controller["index"]} "{controller["bone"]}" {controller["type"]} {float(controller["start"]):g} {float(controller["end"]):g}')
     for hitbox in contract["hitboxes"]:
@@ -599,6 +694,7 @@ def contract_summary(contract: dict[str, Any]) -> dict[str, Any]:
         "model_name": normalized["model_name"],
         "features": {
             "bones": len(normalized["bones"]), "bodies": len(normalized["bodies"]),
+            "bone_renames": len(normalized["bone_renames"]),
             "bodygroups": len(normalized["bodygroups"]), "skin_families": len(normalized["skin_families"]),
             "textures": len(normalized["textures"]), "sequences": len(normalized["sequences"]),
             "hitboxes": len(normalized["hitboxes"]), "attachments": len(normalized["attachments"]),
@@ -608,5 +704,6 @@ def contract_summary(contract: dict[str, Any]) -> dict[str, Any]:
             "physics_interactions": len(normalized.get("physics", {}).get("interactions", [])) if isinstance(normalized.get("physics"), dict) else 0,
             "requirements": len(normalized.get("intent", {}).get("requirements", [])) if isinstance(normalized.get("intent"), dict) else 0,
             "revision": bool(normalized.get("intent", {}).get("revision")) if isinstance(normalized.get("intent"), dict) else False,
+            "compatibility_role": normalized.get("compatibility", {}).get("role") if isinstance(normalized.get("compatibility"), dict) else None,
         },
     }

@@ -125,8 +125,8 @@ def audit(root: Path = REPO_ROOT) -> dict:
     digest, count, byte_count = tree_digest(extension) if extension.is_dir() else ("", 0, 0)
     if manifest.get("distribution") != "public_github_release":
         errors.append("manifest distribution must be public_github_release")
-    if bundle.get("root") != EXTENSION_ROOT.as_posix() or bundle.get("version") != "1.1.0":
-        errors.append("manifest bundle path/version does not match Extension 1.1.0")
+    if bundle.get("root") != EXTENSION_ROOT.as_posix() or bundle.get("version") != "1.2.0":
+        errors.append("manifest bundle path/version does not match Extension 1.2.0")
     if (bundle.get("sha256_tree"), bundle.get("files"), bundle.get("bytes")) != (digest, count, byte_count):
         errors.append("manifest Extension tree integrity does not match repository contents")
     mcp = manifest.get("external_tools", {}).get("blender_mcp", {})

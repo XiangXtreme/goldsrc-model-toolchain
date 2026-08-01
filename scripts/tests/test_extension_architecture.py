@@ -17,7 +17,7 @@ class ExtensionArchitectureTests(unittest.TestCase):
     def test_manifest_has_one_internal_plugin_and_external_mcp(self) -> None:
         manifest = json.loads((REPO_ROOT / "tool-manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(set(manifest["bundles"]), {"goldsrc_model_toolchain"})
-        self.assertEqual(manifest["bundles"]["goldsrc_model_toolchain"]["version"], "1.1.0")
+        self.assertEqual(manifest["bundles"]["goldsrc_model_toolchain"]["version"], "1.2.0")
         self.assertFalse(manifest["external_tools"]["blender_mcp"]["managed_by_extension"])
         self.assertEqual(manifest["external_tools"]["blender_mcp"]["ownership"], "external")
 
@@ -26,6 +26,7 @@ class ExtensionArchitectureTests(unittest.TestCase):
         self.assertIn('"api_version": 1', source)
         self.assertIn('"distribution": "public_github_release"', source)
         self.assertIn('"repository": "https://github.com/XiangXtreme/goldsrc-model-toolchain"', source)
+        self.assertIn('"multi_source_sequence_authoring": False', source)
         compiler = EXTENSION / "bin" / "windows-x64" / "studiomdl.exe"
         self.assertEqual(
             hashlib.sha256(compiler.read_bytes()).hexdigest(),

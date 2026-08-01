@@ -6,25 +6,25 @@
   "public_release": {
     "ready": true,
     "repository": "https://github.com/XiangXtreme/goldsrc-model-toolchain",
-    "tag": "v1.1.0",
-    "asset": "goldsrc_model_toolchain-1.1.0-windows-x64.zip",
+    "tag": "v1.2.0",
+    "asset": "goldsrc_model_toolchain-1.2.0-windows-x64.zip",
     "repository_license": "GPL-2.0-or-later",
     "blockers": []
   },
   "bundles": {
     "goldsrc_model_toolchain": {
       "root": "extension/goldsrc_model_toolchain",
-      "version": "1.1.0",
+      "version": "1.2.0",
       "api_version": 1,
       "source_name": "GoldSrc Model Toolchain Blender Extension",
       "source_url": "https://github.com/XiangXtreme/goldsrc-model-toolchain",
-      "source_ref": "v1.1.0",
+      "source_ref": "v1.2.0",
       "license": "GPL-2.0-or-later",
       "license_url": "https://spdx.org/licenses/GPL-2.0-or-later.html",
       "redistribution_status": "public GitHub release; upstream notices retained",
-      "files": 33,
-      "bytes": 8122283,
-      "sha256_tree": "f43b025658fe64f163ca37969558914e56c1461a0deab9c8068527e78ed4d2c4"
+      "files": 34,
+      "bytes": 8141278,
+      "sha256_tree": "bde80a9f5c5d7402ceb1866b651faeec8496dbe78617365facc03d23ddf630a0"
     }
   },
   "external_tools": {
@@ -75,7 +75,7 @@
   "critical_files": {
     "extension/goldsrc_model_toolchain/blender_manifest.toml": {
       "bytes": 573,
-      "sha256": "a9cc6dbeef4370ed4ffcc0e5689766395e0a582ef4c716999e060125c876c512"
+      "sha256": "3684e857d79724aad696eed5df9f3e9993b90cb782cf6c0f8302ef594bb89537"
     },
     "extension/goldsrc_model_toolchain/bin/windows-x64/studiomdl.exe": {
       "bytes": 523776,
@@ -87,7 +87,7 @@
     },
     "extension/goldsrc_model_toolchain/licenses/UPSTREAM-NOTICES.txt": {
       "bytes": 593,
-      "sha256": "8a93f4b19f2d58e47955e1baab79e3e4bfccccf7fbe83eba0cf1c49f773d3654"
+      "sha256": "bc14bed37c667ced865143ae26028ab8091c5614cb29de81da70b4cd78213698"
     }
   }
 }

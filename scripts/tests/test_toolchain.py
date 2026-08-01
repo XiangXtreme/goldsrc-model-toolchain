@@ -18,7 +18,7 @@ SCRIPT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPT_DIR))
 
 from goldsrc_toolchain.mdl_v10 import _decode_animation_value, inspect_mdl, validate_mdl_contract
-from goldsrc_toolchain.model_contract import ContractError, render_qc, validate_contract
+from goldsrc_toolchain.model_contract import ContractError, effective_texture_modes, render_qc, validate_contract
 from goldsrc_toolchain.paths import ensure_outside_skill_tree, resolve_artifact_root
 from goldsrc_toolchain.smd import SmdError, compiled_model_vertex_count, parse_smd, validate_smd
 from goldsrc_toolchain.textures import (
@@ -211,6 +211,67 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(normalized["outputs"]["sven_mdl"], "unit_model.mdl")
         self.assertEqual(normalized["outputs"]["qc"], "unit_model.qc")
         self.assertIn('$texrendermode "base.bmp" chrome', render_qc(value))
+
+    def test_bone_renames_are_validated_and_rendered_before_models(self) -> None:
+        value = base_contract()
+        value["bones"] = [{"name": "target", "parent": None}]
+        value["hitboxes"][0]["bone"] = "target"
+        value["bone_renames"] = [{"source": "source", "target": "target"}]
+        qc = render_qc(value)
+        self.assertLess(qc.index('$renamebone "source" "target"'), qc.index('$body "body"'))
+        self.assert_contract_error(
+            lambda contract: contract.update(bone_renames=[{"source": "root", "target": "root"}]),
+            "rename a bone to itself",
+        )
+
+    def test_bone_rename_chains_and_missing_targets_are_rejected(self) -> None:
+        value = base_contract()
+        value["bones"] = [{"name": "final", "parent": None}, {"name": "middle", "parent": "final"}]
+        value["bone_renames"] = [
+            {"source": "old", "target": "middle"},
+            {"source": "middle", "target": "final"},
+        ]
+        with self.assertRaisesRegex(ContractError, "chains or cycles"):
+            validate_contract(value)
+        self.assert_contract_error(
+            lambda contract: contract.update(bone_renames=[{"source": "old", "target": "missing"}]),
+            "absent from final contract bones",
+        )
+
+    def test_texture_profiles_and_legacy_chrome_name_are_deterministic(self) -> None:
+        value = base_contract()
+        value["textures"][0].update(name="CHROME_shell.bmp", source="CHROME_shell.bmp", width=128, height=128)
+        with self.assertRaisesRegex(ContractError, "must be 64x64"):
+            validate_contract(value)
+        value["target_profile"] = "sven-coop"
+        normalized = validate_contract(value)
+        self.assertEqual(effective_texture_modes(normalized["textures"][0]), ["chrome", "flatshade"])
+
+        value = base_contract()
+        value["textures"][0]["modes"] = ["fullbright"]
+        with self.assertRaisesRegex(ContractError, "Sven/Xash3D-only fullbright"):
+            validate_contract(value)
+        value["target_profile"] = "sven-coop"
+        self.assertEqual(validate_contract(value)["target_profile"], "sven-coop")
+
+    def test_texrendermode_keeps_all_masked_directives_after_additive(self) -> None:
+        value = base_contract()
+        value["textures"] = [
+            {"name": "mask.bmp", "source": "mask.bmp", "width": 64, "height": 64, "modes": ["masked"]},
+            {"name": "glow.bmp", "source": "glow.bmp", "width": 64, "height": 64, "modes": ["additive", "chrome"]},
+        ]
+        qc = render_qc(value)
+        self.assertLess(qc.index('$texrendermode "glow.bmp" additive'), qc.index('$texrendermode "mask.bmp" masked'))
+
+    def test_compatibility_requires_safe_relative_baseline(self) -> None:
+        self.assert_contract_error(
+            lambda contract: contract.update(compatibility={"role": "player", "baseline_mdl": "../barney.mdl"}),
+            "must stay inside the artifact directory",
+        )
+        self.assert_contract_error(
+            lambda contract: contract.update(compatibility={"role": "prop", "baseline_mdl": "barney.mdl"}),
+            "must be player or npc",
+        )
 
     def test_version_two_requires_traceable_intent(self) -> None:
         value = base_contract()
@@ -575,6 +636,53 @@ class CompilerIntegrationTests(unittest.TestCase):
             changed = copy.deepcopy(normalized)
             changed["bounds"]["bbox"]["max"][0] = 2
             self.assertTrue(any(item["code"] == "mdl.bbox" for item in validate_mdl_contract(inspection, changed)))
+
+    def test_renamebone_canonicalizes_smd_and_compiled_bone_names(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            contract = base_contract()
+            contract["bones"] = [{"name": "target", "parent": None}]
+            contract["bone_renames"] = [{"source": "source", "target": "target"}]
+            contract["hitboxes"][0]["bone"] = "target"
+            (root / "reference.smd").write_text(REFERENCE_SMD.replace('"root"', '"source"'), encoding="utf-8")
+            (root / "idle.smd").write_text(IDLE_SMD.replace('"root"', '"source"'), encoding="utf-8")
+            source = root / "source.png"
+            Image.new("RGBA", (64, 64), (100, 120, 140, 255)).save(source)
+            convert_to_indexed_bmp(source, root / "base.bmp", width=64, height=64)
+            contract_path = root / "model_contract.json"
+            contract_path.write_text(json.dumps(contract), encoding="utf-8")
+            completed = subprocess.run(
+                [sys.executable, str(SCRIPT_DIR / "compile_model.py"), str(contract_path)],
+                capture_output=True, text=True, errors="replace", timeout=30,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+            parsed = inspect_mdl(root / "unit_model.mdl")
+            self.assertEqual([bone["name"] for bone in parsed["bones"]], ["target"])
+
+    def test_chrome_name_set_and_flag_set_compile_to_expected_flags(self) -> None:
+        cases = (
+            ("CHROME_shell.bmp", [], {"chrome", "flatshade"}),
+            ("metal.bmp", ["chrome"], {"chrome"}),
+        )
+        for texture_name, modes, expected in cases:
+            with self.subTest(texture=texture_name), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                contract = base_contract()
+                contract["textures"][0].update(name=texture_name, source=texture_name, modes=modes)
+                (root / "reference.smd").write_text(REFERENCE_SMD.replace("base.bmp", texture_name), encoding="utf-8")
+                (root / "idle.smd").write_text(IDLE_SMD, encoding="utf-8")
+                source = root / "source.png"
+                Image.new("RGBA", (64, 64), (100, 120, 140, 255)).save(source)
+                convert_to_indexed_bmp(source, root / texture_name, width=64, height=64)
+                contract_path = root / "model_contract.json"
+                contract_path.write_text(json.dumps(contract), encoding="utf-8")
+                completed = subprocess.run(
+                    [sys.executable, str(SCRIPT_DIR / "compile_model.py"), str(contract_path)],
+                    capture_output=True, text=True, errors="replace", timeout=30,
+                )
+                self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+                parsed = inspect_mdl(root / "unit_model.mdl")
+                self.assertTrue(expected <= set(parsed["textures"][0]["flag_names"]))
 
     def test_unspecified_hitboxes_accept_compiler_generated_records(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

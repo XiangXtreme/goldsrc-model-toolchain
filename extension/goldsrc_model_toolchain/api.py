@@ -9,6 +9,7 @@ import hashlib
 from .blender.mdl_import import import_mdl as _import_mdl
 from .blender.smd_import import import_smd as _import_smd
 from .core.blender_namespace import assert_exact_asset_namespace, purge_asset_namespace
+from .core.compatibility import validate_model_compatibility, validate_player_portrait
 from .core.errors import ToolchainError
 from .core.mdl_v10 import inspect_mdl
 from .core.model_contract import load_contract
@@ -32,8 +33,11 @@ def _guard(phase: str, code: str, function, *args, **kwargs):
     except ToolchainError:
         raise
     except Exception as exc:
+        details = {"type": type(exc).__name__}
+        if isinstance(getattr(exc, "report", None), dict):
+            details["report"] = exc.report
         raise ToolchainError(
-            phase, code, str(exc), {"type": type(exc).__name__}
+            phase, code, str(exc), details,
         ) from exc
 
 
@@ -45,13 +49,13 @@ class RuntimeAPI:
         compiler = Path(__file__).resolve().parent / "bin" / "windows-x64" / "studiomdl.exe"
         return {
             "id": "goldsrc_model_toolchain",
-            "version": "1.1.0",
+            "version": "1.2.0",
             "api_version": 1,
             "blender": "5.2.x",
             "platform": "windows-x64",
             "distribution": "public_github_release",
             "repository": "https://github.com/XiangXtreme/goldsrc-model-toolchain",
-            "release": "v1.1.0",
+            "release": "v1.2.0",
             "stages": list(PUBLIC_STAGES),
             "formats": {"smd": 1, "mdl": 10, "qc": True, "indexed_bmp": True},
             "roundtrip_parser": "SourceIO 5.5.4 derived GoldSrc-only reader",
@@ -65,6 +69,14 @@ class RuntimeAPI:
                 "sourceio_reader": {"version": "5.5.4-derived", "license": "MIT"},
             },
             "external_sequence_groups": "explicit_contract_limitation_required",
+            "features": {
+                "bone_renames": True,
+                "model_compatibility": ["player", "npc"],
+                "player_portrait": True,
+                "profile_texture_rules": True,
+                "texrendermode_ordering": True,
+                "multi_source_sequence_authoring": False,
+            },
             "rigidbody_capture": "opaque_handle_with_json_matrix_access",
             "artifact_policy": "outside_any_skill_tree",
             "ui": False,
@@ -108,6 +120,18 @@ class RuntimeAPI:
 
     def inspect_mdl(self, path) -> dict:
         return _guard("INSPECT", "mdl.inspect", inspect_mdl, Path(path))
+
+    def validate_model_compatibility(self, candidate_mdl, baseline_mdl, role) -> dict:
+        return _guard(
+            "INSPECT", "compatibility.model", validate_model_compatibility,
+            candidate_mdl, baseline_mdl, role,
+        )
+
+    def validate_player_portrait(self, path, *, remapped=False) -> dict:
+        return _guard(
+            "TEXTURE", "compatibility.player_portrait", validate_player_portrait,
+            path, remapped=bool(remapped),
+        )
 
     def load_contract(self, path, *, artifacts_dir=None, require_files=False) -> dict:
         return _guard(

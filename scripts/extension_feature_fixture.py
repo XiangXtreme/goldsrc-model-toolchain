@@ -136,7 +136,7 @@ def _contract() -> dict:
             }],
             "assumptions": [],
         },
-        "target_profile": "half-life-cs",
+        "target_profile": "sven-coop",
         "model_name": "extension_features.mdl",
         "scale": 1.0,
         "bones": [{"name": "root", "parent": None}, {"name": "control", "parent": "root"}],

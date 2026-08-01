@@ -43,6 +43,8 @@ Require round-trip Actions, five representative images, image variation for anim
 
 For Half-Life/Counter-Strike delivery, reject Sven-only limits or directives not supported by the target engine. Compare explicit MDL bbox/cbox fields with QC. Actual game loading remains a separate claim.
 
+When `compatibility` is declared, require the `INSPECT` report to contain the candidate and baseline paths, role, issues, metadata differences, and appended-sequence facts. Player mismatches in sequence order/count, FPS, frame ceiling, baseline bone prefix, terminal appendages, hitboxes, skin family, or standard bodypart are hard failures. NPC sequence-prefix changes are hard failures; activity, weight, event, and linear-movement changes are retained as evidence. A blend-count warning documents the API-1 limitation and does not claim that multi-source sequence authoring was performed.
+
 ## Explicit Limitations
 
 External sequence groups are unsupported unless the contract explicitly declares that limitation. Embedded Actions and all skin-family metadata are required by default. Do not allow `sourceio_actions` or `sourceio_skin_families` as routine blockers.

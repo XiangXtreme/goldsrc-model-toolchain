@@ -5,6 +5,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+from .compatibility import compare_model_compatibility
 from .errors import ToolchainError
 from .mdl_v10 import compare_mdl_sequence_to_smd, inspect_mdl, validate_mdl_contract
 from .model_contract import ContractError, load_contract, write_qc
@@ -111,7 +112,17 @@ def run_inspect(contract_path: str | Path, artifacts_dir: str | Path) -> dict:
                 "severity": "error", "code": "mdl.animation_decode",
                 "message": f"{sequence['name']}: {message}", "context": audit,
             })
-    if issues:
+    compatibility_report = None
+    compatibility = contract.get("compatibility")
+    if isinstance(compatibility, dict):
+        baseline_path = (root / compatibility["baseline_mdl"]).resolve()
+        compatibility_report = compare_model_compatibility(
+            inspection, inspect_mdl(baseline_path), compatibility["role"],
+        )
+        compatibility_report["candidate_mdl"] = str(mdl_path)
+        compatibility_report["baseline_mdl"] = str(baseline_path)
+        issues.extend(compatibility_report["issues"])
+    if any(item.get("severity", "error") == "error" for item in issues):
         raise ToolchainError("INSPECT", "inspect.contract", "MDL v10 binary inspection failed", {"issues": issues})
     evidence = {
         "mdl": str(mdl_path),
@@ -120,16 +131,18 @@ def run_inspect(contract_path: str | Path, artifacts_dir: str | Path) -> dict:
         "textures": inspection["textures"],
         "bodyparts": inspection["bodyparts"],
         "animation_audits": audits,
+        "compatibility": compatibility_report,
     }
     return {
         "status": "pass",
         "phase": "mdl_inspect",
         "contract_version": contract["version"],
         "target_profile": contract["target_profile"],
-        "issues": [],
+        "issues": issues,
         "known_blockers": [],
         "inspections": {"sven": inspection},
         "animation_audits": {"sven": audits},
+        "compatibility": compatibility_report,
         "requirement_evidence": _requirements(
             contract, "mdl_inspect", "Independent MDL v10 inspection matched contract and source SMD motion", evidence,
         ),

@@ -4,9 +4,11 @@ Public Blender 5.2 Extension and deterministic host tools for creating and valid
 
 The Extension provides GoldSrc SMD/QC import and export, indexed BMP conversion, Sven StudioMDL compilation, independent MDL v10 inspection and readback, rigid-body-to-bone baking helpers, and a background-only five-stage API. It registers no panel or menu. The official [ahujasid/blender-mcp](https://github.com/ahujasid/blender-mcp) remains an external dependency and is never bundled or modified.
 
+Version `1.2.0` adds contract-driven `$renamebone`, Half-Life/Sven special-texture rules, player/NPC baseline inspection, and player portrait validation. Multi-source blend sequence authoring remains an explicit limitation.
+
 ## Install
 
-Download `goldsrc_model_toolchain-1.1.0-windows-x64.zip` and its checksum from the [v1.1.0 release](https://github.com/XiangXtreme/goldsrc-model-toolchain/releases/tag/v1.1.0), verify SHA-256, then install the ZIP as a Blender Extension in the `user_default` repository.
+Download `goldsrc_model_toolchain-1.2.0-windows-x64.zip` and its checksum from the [v1.2.0 release](https://github.com/XiangXtreme/goldsrc-model-toolchain/releases/tag/v1.2.0), verify SHA-256, then install the ZIP as a Blender Extension in the `user_default` repository.
 
 Requirements:
 
@@ -40,8 +42,8 @@ Supported stages are `PREFLIGHT`, `EXPORT`, `COMPILE`, `INSPECT`, and `ROUNDTRIP
 ```powershell
 python -m unittest discover -s scripts/tests -v
 python scripts/audit_repository.py
-python scripts/build_extension.py --output <artifact-dir>/goldsrc_model_toolchain-1.1.0-windows-x64.zip
-python scripts/audit_release_archives.py <artifact-dir>/goldsrc_model_toolchain-1.1.0-windows-x64.zip
+python scripts/build_extension.py --output <artifact-dir>/goldsrc_model_toolchain-1.2.0-windows-x64.zip
+python scripts/audit_release_archives.py <artifact-dir>/goldsrc_model_toolchain-1.2.0-windows-x64.zip
 ```
 
 Generated assets and test artifacts must remain outside this repository.

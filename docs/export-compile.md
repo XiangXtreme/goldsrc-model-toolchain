@@ -63,3 +63,5 @@ External sequence groups remain a limitation only when explicitly declared by th
 ## Texture Modes
 
 Sven StudioMDL writes `$texrendermode` flags. Verify the binary table rather than inferring success from QC output. Supported contract modes are `flatshade`, `chrome`, `fullbright`, `nomips`, `alpha`, `additive`, and `masked`; target-engine compatibility remains separate from compiler acceptance.
+
+Contract v2 also accepts deterministic `$renamebone` mappings and an optional player/NPC compatibility baseline. `INSPECT` compares the compiled candidate with that independent MDL v10 baseline. Runtime callers can invoke `validate_model_compatibility(candidate_mdl, baseline_mdl, role)` directly, and can validate the separate `164x200` indexed player portrait with `validate_player_portrait(path, remapped=False)`.

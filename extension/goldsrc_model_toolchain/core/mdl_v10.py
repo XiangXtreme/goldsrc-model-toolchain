@@ -349,6 +349,8 @@ def patch_texture_flags(
 
 def validate_mdl_contract(inspection: dict, contract: dict, *, tolerance: float = 0.01) -> list[dict]:
     """Compare parsed binary tables with a normalized model contract."""
+    from .model_contract import effective_texture_modes
+
     issues: list[dict] = []
 
     def fail(code: str, message: str, **context) -> None:
@@ -383,7 +385,7 @@ def validate_mdl_contract(inspection: dict, contract: dict, *, tolerance: float 
             continue
         if (actual["width"], actual["height"]) != (texture["width"], texture["height"]):
             fail("mdl.texture_dimensions", f"compiled texture dimensions differ: {texture['name']}", expected=[texture["width"], texture["height"]], actual=[actual["width"], actual["height"]])
-        expected_flags = sum(TEXTURE_FLAGS[mode] for mode in texture.get("modes", []))
+        expected_flags = sum(TEXTURE_FLAGS[mode] for mode in effective_texture_modes(texture))
         if actual["flags"] & expected_flags != expected_flags:
             fail("mdl.texture_flags", f"compiled texture flags are missing: {texture['name']}", expected=expected_flags, actual=actual["flags"])
 
