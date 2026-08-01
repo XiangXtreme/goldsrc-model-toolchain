@@ -1,0 +1,29 @@
+schema_version = "1.0.0"
+
+id = "goldsrc_model_toolchain"
+version = "1.1.0"
+name = "GoldSrc Model Toolchain"
+tagline = "GoldSrc MDL v10 authoring and validation"
+maintainer = "XiangXtreme"
+type = "add-on"
+
+blender_version_min = "5.2.0"
+blender_version_max = "5.3.0"
+platforms = ["windows-x64"]
+license = ["SPDX:GPL-2.0-or-later"]
+
+wheels = [
+  "./wheels/pillow-12.3.0-cp313-cp313-win_amd64.whl",
+]
+
+[permissions]
+files = "Read and write explicit GoldSrc artifact directories"
+
+[build]
+paths_exclude_pattern = [
+  "__pycache__/",
+  ".git",
+  "*.pyc",
+  "*.pyo",
+  "*.zip",
+]

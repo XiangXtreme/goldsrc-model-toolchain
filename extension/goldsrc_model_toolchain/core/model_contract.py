@@ -1,0 +1,612 @@
+"""Versioned production contract for Blender-to-GoldSrc model builds."""
+
+from __future__ import annotations
+
+import copy
+import json
+import math
+import re
+from pathlib import Path, PureWindowsPath
+from typing import Any, Iterable
+
+from .smd import SmdError, geometry_budget, read_smd, validate_smd
+from .textures import TextureError, validate_indexed_bmp
+from .physics_events import normalize_physics, validate_physics_definition
+
+
+CONTRACT_VERSION = 2
+SUPPORTED_CONTRACT_VERSIONS = {1, 2}
+TARGET_PROFILES = {"half-life-cs", "sven-coop"}
+TEXTURE_MODES = {"flatshade", "chrome", "fullbright", "nomips", "alpha", "additive", "masked"}
+MOTION_AXES = {"X", "Y", "Z", "XR", "YR", "ZR", "LX", "LY", "LZ", "AX", "AY", "AZ", "AXR", "AYR", "AZR"}
+CONTROLLER_AXES = {"X", "Y", "Z", "XR", "YR", "ZR", "M"}
+DEFAULT_PHASES = [
+    "environment", "author", "preflight", "export", "compile_sven", "mdl_inspect",
+    "sourceio_roundtrip", "visual_review",
+]
+REQUIREMENT_EVIDENCE_PHASES = set(DEFAULT_PHASES) - {"environment"}
+_NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+
+class ContractError(ValueError):
+    """Raised with all deterministic contract errors, not only the first one."""
+
+    def __init__(self, errors: Iterable[str]):
+        self.errors = list(dict.fromkeys(errors))
+        super().__init__("invalid model contract:\n- " + "\n- ".join(self.errors))
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value))
+
+
+def _is_vec3(value: Any) -> bool:
+    return isinstance(value, list) and len(value) == 3 and all(_is_number(item) for item in value)
+
+
+def _safe_relative(value: Any, label: str, errors: list[str], *, suffix: str | None = None) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        errors.append(f"{label} must be a non-empty relative path")
+        return None
+    value = value.replace("\\", "/")
+    windows = PureWindowsPath(value)
+    if windows.is_absolute() or windows.drive or value.startswith("/") or ".." in Path(value).parts:
+        errors.append(f"{label} must stay inside the artifact directory: {value}")
+    if suffix and Path(value).suffix.casefold() != suffix:
+        errors.append(f"{label} must end with {suffix}: {value}")
+    return value
+
+
+def _unique_names(items: Any, label: str, errors: list[str]) -> set[str]:
+    if not isinstance(items, list):
+        errors.append(f"{label} must be a list")
+        return set()
+    seen: set[str] = set()
+    for index, item in enumerate(items):
+        name = item.get("name") if isinstance(item, dict) else None
+        if not isinstance(name, str) or not name.strip():
+            errors.append(f"{label}[{index}].name is required")
+            continue
+        key = name.casefold()
+        if key in seen:
+            errors.append(f"duplicate {label} name: {name}")
+        seen.add(key)
+    return seen
+
+
+def _nonempty_strings(value: Any, label: str, errors: list[str]) -> list[str]:
+    if not isinstance(value, list) or not value:
+        errors.append(f"{label} must be a non-empty list")
+        return []
+    strings: list[str] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, str) or not item.strip():
+            errors.append(f"{label}[{index}] must be a non-empty string")
+            continue
+        strings.append(item.strip())
+    if len(strings) != len(set(strings)):
+        errors.append(f"{label} must not contain duplicates")
+    return strings
+
+
+def _validate_intent(contract: dict[str, Any], errors: list[str]) -> None:
+    if contract.get("version") == 1:
+        return
+    intent = contract.get("intent")
+    if not isinstance(intent, dict):
+        errors.append("version 2 contract requires intent")
+        return
+    request = intent.get("request")
+    request_text = request if isinstance(request, str) else ""
+    if not request_text.strip():
+        errors.append("intent.request must preserve the non-empty user request")
+    requirements = intent.get("requirements")
+    if not isinstance(requirements, list) or not requirements:
+        errors.append("intent.requirements must be a non-empty list")
+        requirements = []
+    requirement_ids: set[str] = set()
+    for index, requirement in enumerate(requirements):
+        label = f"intent.requirements[{index}]"
+        if not isinstance(requirement, dict):
+            errors.append(f"{label} must be an object")
+            continue
+        requirement_id = requirement.get("id")
+        if not isinstance(requirement_id, str) or not _NAME.match(requirement_id):
+            errors.append(f"{label}.id must use letters, digits, dot, underscore, or dash")
+        elif requirement_id.casefold() in requirement_ids:
+            errors.append(f"duplicate intent requirement id: {requirement_id}")
+        else:
+            requirement_ids.add(requirement_id.casefold())
+        source = requirement.get("source")
+        if not isinstance(source, str) or not source.strip():
+            errors.append(f"{label}.source must quote one explicit user requirement")
+        elif source not in request_text:
+            errors.append(f"{label}.source must appear verbatim in intent.request")
+        phases = _nonempty_strings(requirement.get("evidence_phases"), f"{label}.evidence_phases", errors)
+        if any(phase not in REQUIREMENT_EVIDENCE_PHASES for phase in phases):
+            errors.append(f"{label}.evidence_phases contains an unsupported content-evidence phase")
+        required_phases = contract.get("acceptance", {}).get("required_phases", [])
+        if isinstance(required_phases, list) and any(phase not in required_phases for phase in phases):
+            errors.append(f"{label}.evidence_phases must be included in acceptance.required_phases")
+    assumptions = intent.setdefault("assumptions", [])
+    if not isinstance(assumptions, list):
+        errors.append("intent.assumptions must be a list")
+    else:
+        assumption_ids: set[str] = set()
+        for index, assumption in enumerate(assumptions):
+            label = f"intent.assumptions[{index}]"
+            if not isinstance(assumption, dict):
+                errors.append(f"{label} must be an object")
+                continue
+            assumption_id = assumption.get("id")
+            if not isinstance(assumption_id, str) or not _NAME.match(assumption_id):
+                errors.append(f"{label}.id must use letters, digits, dot, underscore, or dash")
+            elif assumption_id.casefold() in assumption_ids:
+                errors.append(f"duplicate intent assumption id: {assumption_id}")
+            else:
+                assumption_ids.add(assumption_id.casefold())
+            for field in ("statement", "reason"):
+                if not isinstance(assumption.get(field), str) or not assumption[field].strip():
+                    errors.append(f"{label}.{field} must be a non-empty string")
+    revision = intent.get("revision")
+    if revision is None:
+        return
+    if not isinstance(revision, dict):
+        errors.append("intent.revision must be an object")
+        return
+    _safe_relative(revision.get("baseline_report"), "intent.revision.baseline_report", errors, suffix=".json")
+    _nonempty_strings(revision.get("changed_factors"), "intent.revision.changed_factors", errors)
+    _nonempty_strings(revision.get("preserve"), "intent.revision.preserve", errors)
+
+
+def normalize_contract(value: dict[str, Any]) -> dict[str, Any]:
+    contract = copy.deepcopy(value)
+    contract.setdefault("version", CONTRACT_VERSION)
+    contract.setdefault("target_profile", "half-life-cs")
+    contract.setdefault("scale", 1.0)
+    for key in ("bones", "bodies", "bodygroups", "textures", "skin_families", "sequences", "hitboxes", "attachments", "controllers"):
+        contract.setdefault(key, [])
+    model_name = contract.get("model_name", "model.mdl")
+    stem = Path(str(model_name)).stem or "model"
+    outputs = contract.setdefault("outputs", {})
+    outputs.setdefault("qc", f"{stem}.qc")
+    outputs.setdefault("sven_mdl", str(model_name))
+    outputs.setdefault("report", "model_pipeline_report.json")
+    acceptance = contract.setdefault("acceptance", {})
+    acceptance.setdefault("required_phases", list(DEFAULT_PHASES))
+    acceptance.setdefault("visual_views", ["front", "three_quarter", "side"])
+    acceptance.setdefault("allow_known_blockers", [])
+    limitations = contract.setdefault("limitations", {})
+    if isinstance(limitations, dict):
+        limitations.setdefault("external_sequence_groups", [])
+    if "physics" in contract and isinstance(contract["physics"], dict):
+        contract["physics"] = normalize_physics(contract["physics"])
+    return contract
+
+
+def validate_contract(
+    value: dict[str, Any],
+    *,
+    artifact_dir: Path | str | None = None,
+    require_files: bool = False,
+) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ContractError(["contract root must be an object"])
+    contract = normalize_contract(value)
+    errors: list[str] = []
+    if contract["version"] not in SUPPORTED_CONTRACT_VERSIONS:
+        errors.append(f"unsupported contract version: {contract['version']}")
+    if contract["target_profile"] not in TARGET_PROFILES:
+        errors.append(f"unsupported target_profile: {contract['target_profile']}")
+    model_name = _safe_relative(contract.get("model_name"), "model_name", errors, suffix=".mdl")
+    if model_name and not _NAME.match(Path(model_name).name):
+        errors.append("model_name filename may only contain letters, digits, dot, underscore, and dash")
+    if not _is_number(contract.get("scale")) or float(contract["scale"]) <= 0:
+        errors.append("scale must be a finite positive number")
+    limitations = contract.get("limitations")
+    if not isinstance(limitations, dict):
+        errors.append("limitations must be an object")
+    else:
+        unknown_limitations = sorted(set(limitations) - {"external_sequence_groups"})
+        if unknown_limitations:
+            errors.append(f"unsupported limitations: {', '.join(unknown_limitations)}")
+        external_groups = limitations.get("external_sequence_groups")
+        if not isinstance(external_groups, list):
+            errors.append("limitations.external_sequence_groups must be a list")
+        else:
+            names = []
+            for index, name in enumerate(external_groups):
+                if not isinstance(name, str) or not name.strip():
+                    errors.append(f"limitations.external_sequence_groups[{index}] must be a sequence name")
+                else:
+                    names.append(name.casefold())
+            if len(names) != len(set(names)):
+                errors.append("limitations.external_sequence_groups must not contain duplicates")
+    _validate_intent(contract, errors)
+    errors.extend(validate_physics_definition(contract.get("physics")))
+
+    bones = contract["bones"]
+    bone_names = _unique_names(bones, "bones", errors)
+    if len(bones) > 128:
+        errors.append("GoldSrc bone budget exceeded: at most 128 bones are exportable")
+    bone_by_name = {item.get("name", "").casefold(): item for item in bones if isinstance(item, dict)}
+    for index, bone in enumerate(bones if isinstance(bones, list) else []):
+        if not isinstance(bone, dict):
+            errors.append(f"bones[{index}] must be an object")
+            continue
+        parent = bone.get("parent")
+        if parent is not None and (not isinstance(parent, str) or parent.casefold() not in bone_names):
+            errors.append(f"bone {bone.get('name', index)} references missing parent {parent}")
+    for name, bone in bone_by_name.items():
+        seen = {name}
+        parent = bone.get("parent")
+        while isinstance(parent, str) and parent.casefold() in bone_by_name:
+            key = parent.casefold()
+            if key in seen:
+                errors.append(f"bone hierarchy contains a cycle at {bone.get('name')}")
+                break
+            seen.add(key)
+            parent = bone_by_name[key].get("parent")
+    if not bone_names:
+        errors.append("at least one bone is required, including for static models")
+
+    source_paths: list[tuple[str, str, bool]] = []
+    body_names = _unique_names(contract["bodies"], "bodies", errors)
+    for index, body in enumerate(contract["bodies"]):
+        if not isinstance(body, dict):
+            errors.append(f"bodies[{index}] must be an object")
+            continue
+        source = _safe_relative(body.get("source"), f"bodies[{index}].source", errors, suffix=".smd")
+        if source:
+            source_paths.append((f"bodies[{index}]", source, True))
+        if not isinstance(body.get("object"), str) or not body["object"].strip():
+            errors.append(f"bodies[{index}].object must name a Blender mesh object")
+
+    group_names = _unique_names(contract["bodygroups"], "bodygroups", errors)
+    if body_names & group_names:
+        errors.append("body and bodygroup names must be unique")
+    for group_index, group in enumerate(contract["bodygroups"]):
+        if not isinstance(group, dict):
+            errors.append(f"bodygroups[{group_index}] must be an object")
+            continue
+        choices = group.get("choices")
+        if not isinstance(choices, list) or not choices:
+            errors.append(f"bodygroup {group.get('name', group_index)} must have at least one choice")
+            continue
+        for choice_index, choice in enumerate(choices):
+            label = f"bodygroups[{group_index}].choices[{choice_index}]"
+            if not isinstance(choice, dict):
+                errors.append(f"{label} must be an object")
+                continue
+            has_blank = choice.get("blank") is True
+            has_studio = "studio" in choice
+            if has_blank == has_studio:
+                errors.append(f"{label} must declare exactly one of blank=true or studio")
+                continue
+            if has_studio:
+                source = _safe_relative(choice.get("studio"), f"{label}.studio", errors, suffix=".smd")
+                if source:
+                    source_paths.append((label, source, True))
+                if not isinstance(choice.get("object"), str) or not choice["object"].strip():
+                    errors.append(f"{label}.object must name a Blender mesh object")
+
+    texture_names = _unique_names(contract["textures"], "textures", errors)
+    textures = {item.get("name", "").casefold(): item for item in contract["textures"] if isinstance(item, dict)}
+    for index, texture in enumerate(contract["textures"]):
+        if not isinstance(texture, dict):
+            errors.append(f"textures[{index}] must be an object")
+            continue
+        name = texture.get("name")
+        if isinstance(name, str) and Path(name).suffix.casefold() != ".bmp":
+            errors.append(f"texture name must end with .bmp: {name}")
+        source = _safe_relative(texture.get("source", name), f"textures[{index}].source", errors, suffix=".bmp")
+        texture["source"] = source or texture.get("source", name)
+        width, height = texture.get("width"), texture.get("height")
+        if not all(isinstance(item, int) and not isinstance(item, bool) and 0 < item <= 512 and item % 16 == 0 for item in (width, height)):
+            errors.append(f"texture {name or index} dimensions must be integer multiples of 16 within 1..512")
+        modes = texture.setdefault("modes", [])
+        if not isinstance(modes, list) or len(modes) != len(set(modes)) or any(mode not in TEXTURE_MODES for mode in modes):
+            errors.append(f"texture {name or index} has unsupported modes")
+
+    families = contract["skin_families"]
+    if families:
+        if not all(isinstance(row, list) for row in families):
+            errors.append("every skin family must be a list")
+        else:
+            widths = {len(row) for row in families}
+            if len(widths) != 1 or 0 in widths:
+                errors.append("skin family rows must be non-empty and have identical lengths")
+            for family_index, row in enumerate(families):
+                for slot, texture_name in enumerate(row):
+                    key = texture_name.casefold() if isinstance(texture_name, str) else ""
+                    if key not in texture_names:
+                        errors.append(f"skin family {family_index} slot {slot} references missing texture {texture_name}")
+            if len(widths) == 1 and 0 not in widths:
+                width = next(iter(widths))
+                for slot in range(width):
+                    dimensions = {
+                        (textures[row[slot].casefold()].get("width"), textures[row[slot].casefold()].get("height"))
+                        for row in families if isinstance(row[slot], str) and row[slot].casefold() in textures
+                    }
+                    if len(dimensions) > 1:
+                        errors.append(f"skin slot {slot} textures do not share dimensions")
+
+    sequence_names = _unique_names(contract["sequences"], "sequences", errors)
+    physics = contract.get("physics")
+    physics_simulation = physics.get("simulation", {}) if isinstance(physics, dict) else {}
+    physics_sequence = physics_simulation.get("sequence") if isinstance(physics_simulation, dict) else None
+    physics_export_fps = physics_simulation.get("export_fps") if isinstance(physics_simulation, dict) else None
+    if physics_sequence is not None:
+        matching_sequences = [item for item in contract["sequences"] if isinstance(item, dict) and item.get("name", "").casefold() == str(physics_sequence).casefold()]
+        if not matching_sequences:
+            errors.append(f"physics.simulation.sequence references missing sequence: {physics_sequence}")
+        elif physics_export_fps is not None and _is_number(physics_export_fps) and abs(float(matching_sequences[0].get("fps", 0)) - float(physics_export_fps)) > 1e-6:
+            errors.append("physics.simulation.sequence FPS must equal physics.simulation.export_fps")
+    for index, sequence in enumerate(contract["sequences"]):
+        if not isinstance(sequence, dict):
+            errors.append(f"sequences[{index}] must be an object")
+            continue
+        source = _safe_relative(sequence.get("source"), f"sequences[{index}].source", errors, suffix=".smd")
+        if source:
+            source_paths.append((f"sequences[{index}]", source, False))
+        if not isinstance(sequence.get("action"), str) or not sequence["action"].strip():
+            errors.append(f"sequences[{index}].action must name a Blender Action")
+        fps = sequence.get("fps")
+        if not _is_number(fps) or not 0 < float(fps) <= 120:
+            errors.append(f"sequence {sequence.get('name', index)} fps must be within 0..120")
+        frame_range = sequence.get("frame")
+        if frame_range is not None and (not isinstance(frame_range, list) or len(frame_range) != 2 or not all(isinstance(item, int) for item in frame_range) or frame_range[0] > frame_range[1]):
+            errors.append(f"sequence {sequence.get('name', index)} has an invalid frame range")
+        motion = sequence.setdefault("motion", [])
+        if not isinstance(motion, list) or any(axis not in MOTION_AXES for axis in motion):
+            errors.append(f"sequence {sequence.get('name', index)} has an invalid motion axis")
+        for event_index, event in enumerate(sequence.setdefault("events", [])):
+            if not isinstance(event, dict) or not isinstance(event.get("frame"), int) or not isinstance(event.get("id"), int):
+                errors.append(f"sequence {sequence.get('name', index)} event {event_index} is invalid")
+                continue
+            if frame_range and not frame_range[0] <= event["frame"] <= frame_range[1]:
+                errors.append(f"sequence {sequence.get('name', index)} event {event_index} is outside its frame range")
+
+    for label, items in (("hitboxes", contract["hitboxes"]), ("attachments", contract["attachments"]), ("controllers", contract["controllers"])):
+        for index, item in enumerate(items):
+            if not isinstance(item, dict):
+                errors.append(f"{label}[{index}] must be an object")
+                continue
+            bone = item.get("bone")
+            if not isinstance(bone, str) or bone.casefold() not in bone_names:
+                errors.append(f"{label}[{index}] references missing bone {bone}")
+            if label == "hitboxes" and (not _is_vec3(item.get("min")) or not _is_vec3(item.get("max"))):
+                errors.append(f"hitboxes[{index}] requires numeric min/max vectors")
+            elif label == "hitboxes" and any(item["min"][axis] > item["max"][axis] for axis in range(3)):
+                errors.append(f"hitboxes[{index}] min must not exceed max")
+            if label == "attachments" and (not isinstance(item.get("index"), int) or not _is_vec3(item.get("origin"))):
+                errors.append(f"attachments[{index}] requires integer index and numeric origin")
+            if label == "controllers" and (item.get("type") not in CONTROLLER_AXES or not isinstance(item.get("index"), int) or not _is_number(item.get("start")) or not _is_number(item.get("end"))):
+                errors.append(f"controllers[{index}] has invalid index, type, or range")
+            elif label == "controllers" and float(item["start"]) >= float(item["end"]):
+                errors.append(f"controllers[{index}] start must be less than end")
+    attachment_indices = [item.get("index") for item in contract["attachments"] if isinstance(item, dict)]
+    if len(attachment_indices) != len(set(attachment_indices)) or any(not isinstance(index, int) or not 0 <= index <= 3 for index in attachment_indices):
+        errors.append("attachment indices must be unique within 0..3")
+    controller_indices = [item.get("index") for item in contract["controllers"] if isinstance(item, dict)]
+    if len(controller_indices) != len(set(controller_indices)) or any(not isinstance(index, int) or not 0 <= index <= 4 for index in controller_indices):
+        errors.append("controller indices must be unique within 0..4")
+
+    bounds = contract.get("bounds")
+    if not isinstance(bounds, dict):
+        errors.append("bounds must define bbox and cbox")
+    else:
+        for kind in ("bbox", "cbox"):
+            box = bounds.get(kind)
+            if not isinstance(box, dict) or not _is_vec3(box.get("min")) or not _is_vec3(box.get("max")):
+                errors.append(f"bounds.{kind} requires numeric min/max vectors")
+            elif any(box["min"][axis] > box["max"][axis] for axis in range(3)):
+                errors.append(f"bounds.{kind} min must not exceed max")
+
+    output_paths: list[str] = []
+    for name, output in contract["outputs"].items():
+        expected = ".mdl" if name.endswith("mdl") else ".qc" if name.endswith("qc") else ".json" if name == "report" else None
+        normalized_output = _safe_relative(output, f"outputs.{name}", errors, suffix=expected)
+        if normalized_output:
+            output_paths.append(normalized_output.casefold())
+    if len(output_paths) != len(set(output_paths)):
+        errors.append("outputs must use distinct paths so validation builds cannot overwrite production artifacts")
+    phases = contract["acceptance"].get("required_phases")
+    if not isinstance(phases, list) or len(phases) != len(set(phases)) or any(phase not in DEFAULT_PHASES for phase in phases):
+        errors.append("acceptance.required_phases contains duplicates or unknown phases")
+
+    root = Path(artifact_dir).expanduser().resolve() if artifact_dir is not None else None
+    if require_files and root is None:
+        errors.append("artifact_dir is required when require_files=true")
+    if require_files and root:
+        revision = contract.get("intent", {}).get("revision") if isinstance(contract.get("intent"), dict) else None
+        if isinstance(revision, dict) and isinstance(revision.get("baseline_report"), str):
+            baseline_path = (root / revision["baseline_report"]).resolve()
+            if root not in baseline_path.parents:
+                errors.append("intent.revision.baseline_report escapes artifact directory")
+            elif not baseline_path.is_file():
+                errors.append(f"intent.revision.baseline_report is missing: {revision['baseline_report']}")
+            else:
+                try:
+                    baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+                    if baseline.get("status") not in {"pass", "pass_with_known_blockers"}:
+                        errors.append("intent.revision.baseline_report is not a passing pipeline report")
+                except (OSError, json.JSONDecodeError, AttributeError) as exc:
+                    errors.append(f"intent.revision.baseline_report is invalid: {exc}")
+        documents = []
+        for label, relative, require_triangles in source_paths:
+            path = (root / relative).resolve()
+            if root not in path.parents:
+                errors.append(f"{label} escapes artifact directory")
+                continue
+            if not path.is_file():
+                errors.append(f"{label} file is missing: {relative}")
+                continue
+            try:
+                document = read_smd(path)
+                for message in validate_smd(document, require_triangles=require_triangles):
+                    errors.append(f"{label}: {message}")
+                documents.append((label, document))
+            except (OSError, SmdError, ValueError) as exc:
+                errors.append(f"{label}: {exc}")
+        referenced_materials = {material.casefold() for _label, document in documents for material in document.materials}
+        for label, document in documents:
+            if label.startswith("sequences["):
+                continue
+            budget = geometry_budget(document, target_profile=contract["target_profile"])
+            if budget["hard_failure"]:
+                if budget["compiled_vertices"] > budget["vertex_limit"]:
+                    errors.append(
+                        f"{label} GoldSrc compiled vertex budget exceeded: "
+                        f"{budget['compiled_vertices']} > {budget['vertex_limit']}"
+                    )
+                if budget["triangles"] > budget["triangle_limit"]:
+                    errors.append(
+                        f"{label} GoldSrc triangle budget exceeded: "
+                        f"{budget['triangles']} > {budget['triangle_limit']}"
+                    )
+        missing_materials = referenced_materials - texture_names
+        for material in sorted(missing_materials):
+            errors.append(f"SMD material is absent from textures: {material}")
+        expected_bones = {(item["name"].casefold(), item.get("parent").casefold() if isinstance(item.get("parent"), str) else None) for item in bones if isinstance(item, dict) and isinstance(item.get("name"), str)}
+        for label, document in documents:
+            id_to_name = {bone.index: bone.name.casefold() for bone in document.bones}
+            # Source Tools emits this helper node in SMD skeleton blocks, while
+            # StudioMDL excludes it from the compiled GoldSrc bone table.
+            actual = {
+                (bone.name.casefold(), id_to_name.get(bone.parent))
+                for bone in document.bones
+                if bone.name.casefold() != "blender_implicit"
+            }
+            if actual != expected_bones:
+                errors.append(f"{label} skeleton does not match contract bones")
+        sequence_documents = {
+            label: document for label, document in documents if label.startswith("sequences[")
+        }
+        for index, sequence in enumerate(contract["sequences"]):
+            document = sequence_documents.get(f"sequences[{index}]")
+            if not document or not document.frames:
+                continue
+            allowed_start, allowed_end = sequence.get("frame", [min(document.frames), max(document.frames)])
+            if allowed_start < min(document.frames) or allowed_end > max(document.frames):
+                errors.append(f"sequence {sequence['name']} frame range exceeds its SMD frames")
+            for event_index, event in enumerate(sequence.get("events", [])):
+                if not allowed_start <= event["frame"] <= allowed_end:
+                    errors.append(f"sequence {sequence['name']} event {event_index} is outside exported frames")
+        for index, texture in enumerate(contract["textures"]):
+            if not isinstance(texture, dict) or not isinstance(texture.get("source"), str):
+                continue
+            try:
+                validate_indexed_bmp(root / texture["source"], width=texture.get("width"), height=texture.get("height"), modes=texture.get("modes", []), require_masked_pixels=texture.get("require_masked_pixels", True))
+            except (OSError, TextureError) as exc:
+                errors.append(f"textures[{index}]: {exc}")
+    if errors:
+        raise ContractError(errors)
+    return contract
+
+
+def load_contract(path: Path | str, *, artifact_dir: Path | str | None = None, require_files: bool = False) -> dict[str, Any]:
+    resolved = Path(path).expanduser().resolve()
+    try:
+        value = json.loads(resolved.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ContractError([f"cannot read contract {resolved}: {exc}"]) from exc
+    return validate_contract(value, artifact_dir=artifact_dir or resolved.parent, require_files=require_files)
+
+
+def _quoted_source(path: str) -> str:
+    normalized = path.replace("\\", "/")
+    return normalized[:-4] if normalized.casefold().endswith(".smd") else normalized
+
+
+def _box_line(name: str, box: dict[str, list[float]]) -> str:
+    values = [*box["min"], *box["max"]]
+    return f"${name} " + " ".join(f"{float(value):g}" for value in values)
+
+
+def render_qc(contract: dict[str, Any]) -> str:
+    contract = validate_contract(contract)
+    lines = [
+        f'$modelname "{contract["outputs"]["sven_mdl"]}"',
+        '$cd "."',
+        '$cdtexture "."',
+        f'$scale {float(contract["scale"]):g}',
+        _box_line("bbox", contract["bounds"]["bbox"]),
+        _box_line("cbox", contract["bounds"]["cbox"]),
+    ]
+    for body in contract["bodies"]:
+        lines.append(f'$body "{body["name"]}" "{_quoted_source(body["source"])}"')
+    for group in contract["bodygroups"]:
+        lines.extend([f'$bodygroup "{group["name"]}"', "{"])
+        for choice in group["choices"]:
+            lines.append("    blank" if choice.get("blank") is True else f'    studio "{_quoted_source(choice["studio"])}"')
+        lines.append("}")
+    if contract["skin_families"]:
+        lines.extend(['$texturegroup "skinfamilies"', "{"])
+        for family in contract["skin_families"]:
+            lines.append("    { " + " ".join(f'"{name}"' for name in family) + " }")
+        lines.append("}")
+    for texture in contract["textures"]:
+        for mode in texture.get("modes", []):
+            lines.append(f'$texrendermode "{texture["name"]}" {mode}')
+    for controller in contract["controllers"]:
+        lines.append(f'$controller {controller["index"]} "{controller["bone"]}" {controller["type"]} {float(controller["start"]):g} {float(controller["end"]):g}')
+    for hitbox in contract["hitboxes"]:
+        values = [*hitbox["min"], *hitbox["max"]]
+        lines.append(f'$hbox {int(hitbox.get("group", 0))} "{hitbox["bone"]}" ' + " ".join(f"{float(value):g}" for value in values))
+    for attachment in contract["attachments"]:
+        lines.append(f'$attachment {attachment["index"]} "{attachment["bone"]}" ' + " ".join(f"{float(value):g}" for value in attachment["origin"]))
+    for sequence in contract["sequences"]:
+        parts = [f'$sequence "{sequence["name"]}" "{_quoted_source(sequence["source"])}"']
+        if sequence.get("frame"):
+            parts.extend(["frame", str(sequence["frame"][0]), str(sequence["frame"][1])])
+        parts.extend(["fps", f'{float(sequence["fps"]):g}'])
+        if sequence.get("loop"):
+            parts.append("loop")
+        parts.extend(sequence.get("motion", []))
+        if sequence.get("origin"):
+            parts.extend(["origin", *(f"{float(value):g}" for value in sequence["origin"])])
+        activity = sequence.get("activity")
+        if isinstance(activity, dict):
+            parts.extend([str(activity["name"]), str(int(activity.get("weight", 1)))])
+        if sequence.get("events"):
+            parts.append("{")
+            for event in sequence["events"]:
+                parts.extend(["event", str(event["id"]), str(event["frame"])])
+                if event.get("options"):
+                    parts.append(f'"{event["options"]}"')
+            parts.append("}")
+        lines.append(" ".join(parts))
+    return "\n".join(lines) + "\n"
+
+
+def write_qc(contract: dict[str, Any], artifact_dir: Path | str) -> Path:
+    normalized = validate_contract(contract)
+    root = Path(artifact_dir).expanduser().resolve()
+    path = (root / normalized["outputs"]["qc"]).resolve()
+    if root not in path.parents:
+        raise ContractError([f"QC output escapes artifact directory: {path}"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(render_qc(normalized), encoding="utf-8")
+    return path
+
+
+def contract_summary(contract: dict[str, Any]) -> dict[str, Any]:
+    normalized = validate_contract(contract)
+    return {
+        "contract_version": normalized["version"],
+        "target_profile": normalized["target_profile"],
+        "model_name": normalized["model_name"],
+        "features": {
+            "bones": len(normalized["bones"]), "bodies": len(normalized["bodies"]),
+            "bodygroups": len(normalized["bodygroups"]), "skin_families": len(normalized["skin_families"]),
+            "textures": len(normalized["textures"]), "sequences": len(normalized["sequences"]),
+            "hitboxes": len(normalized["hitboxes"]), "attachments": len(normalized["attachments"]),
+            "controllers": len(normalized["controllers"]),
+            "physics_mode": normalized.get("physics", {}).get("mode") if isinstance(normalized.get("physics"), dict) else None,
+            "physics_stages": len(normalized.get("physics", {}).get("stages", [])) if isinstance(normalized.get("physics"), dict) else 0,
+            "physics_interactions": len(normalized.get("physics", {}).get("interactions", [])) if isinstance(normalized.get("physics"), dict) else 0,
+            "requirements": len(normalized.get("intent", {}).get("requirements", [])) if isinstance(normalized.get("intent"), dict) else 0,
+            "revision": bool(normalized.get("intent", {}).get("revision")) if isinstance(normalized.get("intent"), dict) else False,
+        },
+    }

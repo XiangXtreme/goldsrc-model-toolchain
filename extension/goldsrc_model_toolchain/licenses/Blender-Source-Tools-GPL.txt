@@ -1,0 +1,12 @@
+Blender Source Tools compatibility notice
+
+The GoldSrc SMD coordinate, skeleton, material-token and rigid-weight export
+behavior in this extension was derived from Blender Source Tools.
+
+Copyright (C) 2011-2026 Tom Edwards and Blender Source Tools contributors
+Upstream: https://github.com/Artfunkel/BlenderSourceTools
+License: GNU General Public License, version 2 or any later version
+License text: https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
+
+This extension is distributed under GPL-2.0-or-later as declared by its
+Blender manifest. There is no warranty, to the extent permitted by law.

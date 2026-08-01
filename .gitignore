@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+artifacts/
+dist/
+outputs/
+work/
+*.zip
+*.zip.sha256
+error.log

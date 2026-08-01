@@ -1,0 +1,17 @@
+GoldSrc Model Toolchain 1.1.0 upstream notices
+
+- SourceIO GoldSrc MDL v10 parser/reconstruction logic
+  Copyright (c) 2020 REDxEYE
+  MIT license; see SourceIO-MIT.txt
+  https://github.com/REDxEYE/SourceIO
+
+- Pillow 12.3.0 CPython 3.13 Windows x64 wheel
+  HPND license; see Pillow-HPND.txt and the wheel metadata
+  https://python-pillow.github.io/
+
+- Blender Source Tools SMD behavior
+  GPL-2.0-or-later; see Blender-Source-Tools-GPL.txt
+  https://github.com/Artfunkel/BlenderSourceTools
+
+- Sven Co-op SDK StudioMDL
+  Bundled from the Sven Co-op SDK modelling tools; see STUDIO-MDL-NOTICE.txt

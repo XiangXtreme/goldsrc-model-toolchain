@@ -1,0 +1,93 @@
+{
+  "schema_version": 2,
+  "platform": "windows-x64",
+  "blender_version": "5.2.x LTS",
+  "distribution": "public_github_release",
+  "public_release": {
+    "ready": true,
+    "repository": "https://github.com/XiangXtreme/goldsrc-model-toolchain",
+    "tag": "v1.1.0",
+    "asset": "goldsrc_model_toolchain-1.1.0-windows-x64.zip",
+    "repository_license": "GPL-2.0-or-later",
+    "blockers": []
+  },
+  "bundles": {
+    "goldsrc_model_toolchain": {
+      "root": "extension/goldsrc_model_toolchain",
+      "version": "1.1.0",
+      "api_version": 1,
+      "source_name": "GoldSrc Model Toolchain Blender Extension",
+      "source_url": "https://github.com/XiangXtreme/goldsrc-model-toolchain",
+      "source_ref": "v1.1.0",
+      "license": "GPL-2.0-or-later",
+      "license_url": "https://spdx.org/licenses/GPL-2.0-or-later.html",
+      "redistribution_status": "public GitHub release; upstream notices retained",
+      "files": 33,
+      "bytes": 8122283,
+      "sha256_tree": "f43b025658fe64f163ca37969558914e56c1461a0deab9c8068527e78ed4d2c4"
+    }
+  },
+  "external_tools": {
+    "blender_mcp": {
+      "ownership": "external",
+      "managed_by_extension": false,
+      "verified_baseline": "blender-mcp 1.6.0 + mcp 1.29.0",
+      "source_name": "Official Blender MCP",
+      "source_url": "https://github.com/ahujasid/blender-mcp",
+      "source_ref": "Official installation supplied and updated outside this repository",
+      "license": "MIT",
+      "license_url": "https://github.com/ahujasid/blender-mcp/blob/main/LICENSE",
+      "redistribution_status": "not_bundled"
+    }
+  },
+  "components": {
+    "sven_studiomdl": {
+      "path": "extension/goldsrc_model_toolchain/bin/windows-x64/studiomdl.exe",
+      "version": "Sven Co-op SDK Steam snapshot",
+      "source_name": "Sven Co-op SDK StudioMDL",
+      "source_url": "https://wiki.svencoop.com/Mapping/Setting_up_the_SDK",
+      "source_ref": "Steam SDK file; byte-identical to Sven Co-op SDK/modelling/studiomdl.exe",
+      "license": "UPSTREAM-SDK-TERMS",
+      "license_url": "https://www.svencoop.com/",
+      "redistribution_status": "bundled in the public release at repository owner direction"
+    },
+    "pillow": {
+      "path": "extension/goldsrc_model_toolchain/wheels/pillow-12.3.0-cp313-cp313-win_amd64.whl",
+      "version": "12.3.0 cp313 win_amd64",
+      "source_name": "Pillow",
+      "source_url": "https://pypi.org/project/pillow/12.3.0/",
+      "source_ref": "Official CPython 3.13 Windows x64 wheel",
+      "license": "HPND",
+      "license_url": "https://github.com/python-pillow/Pillow/blob/12.3.0/LICENSE",
+      "redistribution_status": "allowed with license notice"
+    },
+    "sourceio_goldsrc_reader": {
+      "path": "extension/goldsrc_model_toolchain/vendor/sourceio_goldsrc/reader.py",
+      "version": "SourceIO 5.5.4 derived",
+      "source_name": "SourceIO GoldSrc MDL v10 reader",
+      "source_url": "https://github.com/REDxEYE/SourceIO",
+      "source_ref": "GoldSrc-only independent readback subset derived from SourceIO 5.5.4",
+      "license": "MIT",
+      "license_url": "https://github.com/REDxEYE/SourceIO/blob/5.5.4/LICENSE",
+      "redistribution_status": "allowed with license notice"
+    }
+  },
+  "critical_files": {
+    "extension/goldsrc_model_toolchain/blender_manifest.toml": {
+      "bytes": 573,
+      "sha256": "a9cc6dbeef4370ed4ffcc0e5689766395e0a582ef4c716999e060125c876c512"
+    },
+    "extension/goldsrc_model_toolchain/bin/windows-x64/studiomdl.exe": {
+      "bytes": 523776,
+      "sha256": "a96afa8b711be20e706fadcbe0f62d996812c4b3ccc3c4e3b617a3a12550276a"
+    },
+    "extension/goldsrc_model_toolchain/wheels/pillow-12.3.0-cp313-cp313-win_amd64.whl": {
+      "bytes": 7239691,
+      "sha256": "1cca606cd25738df4ed873d5ad46bbdb3d83b5cbca291f6b4ff13a4df6b0bbe8"
+    },
+    "extension/goldsrc_model_toolchain/licenses/UPSTREAM-NOTICES.txt": {
+      "bytes": 593,
+      "sha256": "8a93f4b19f2d58e47955e1baab79e3e4bfccccf7fbe83eba0cf1c49f773d3654"
+    }
+  }
+}

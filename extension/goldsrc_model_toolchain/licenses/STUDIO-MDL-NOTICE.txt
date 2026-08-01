@@ -1,0 +1,9 @@
+StudioMDL component notice
+
+bin/windows-x64/studiomdl.exe is a byte-identical snapshot from the Sven Co-op
+SDK modelling tools. It is bundled in this public Extension release at the
+repository owner's direction. This notice records provenance and does not
+replace upstream terms.
+
+Source information: https://wiki.svencoop.com/Mapping/Setting_up_the_SDK
+SHA-256: a96afa8b711be20e706fadcbe0f62d996812c4b3ccc3c4e3b617a3a12550276a
