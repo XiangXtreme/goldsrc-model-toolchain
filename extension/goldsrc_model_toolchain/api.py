@@ -12,6 +12,13 @@ from .core.blender_namespace import assert_exact_asset_namespace, purge_asset_na
 from .core.compatibility import validate_model_compatibility, validate_player_portrait
 from .core.decompile import decompile_mdl
 from .core.errors import ToolchainError
+from .core.large_textures import (
+    split_smd_document,
+    tile_smd_document,
+    tile_names,
+    validate_large_texture_spec,
+    write_smd,
+)
 from .core.mdl_v10 import inspect_mdl
 from .core.model_contract import load_contract
 from .core.paths import ensure_outside_skill_tree
@@ -25,7 +32,8 @@ from .core.rigidbody_bake import (
     write_capture_matrices,
 )
 from .core.stages import PUBLIC_STAGES, execute_stage
-from .core.textures import convert_to_indexed_bmp
+from .core.smd import read_smd
+from .core.textures import convert_image_tile_to_indexed_bmp, convert_to_indexed_bmp
 from .core.visual_evidence import create_labeled_contact_sheet
 
 
@@ -88,6 +96,17 @@ class RuntimeAPI:
                 "preflight_object_bounds": True,
                 "evaluated_uv_material_reports": True,
                 "failed_requirement_evidence": True,
+                "large_texture_tiling": {
+                    "source_tile_size": 512,
+                    "max_tiles_per_mdl": 64,
+                    "method": "UV-clipped 512px indexed BMP tiles",
+                },
+                "smd_budget_split": {
+                    "compiled_vertices": 2048,
+                    "compiled_normals": 2048,
+                    "triangles": 20000,
+                    "method": "deterministic triangle-preserving body parts",
+                },
                 "high_quality_texture_quantization": "Pillow MEDIANCUT",
                 "texture_fidelity_report": True,
                 "labeled_visual_contact_sheets": True,
@@ -145,6 +164,82 @@ class RuntimeAPI:
             source, destination, width=int(width), height=int(height), modes=list(modes),
             alpha_threshold=int(alpha_threshold),
         )
+
+    def split_smd_for_goldsrc(
+        self, smd_path, output_dir, *, max_vertices=2048, max_normals=2048, max_triangles=20000,
+    ) -> dict:
+        output_dir = _guard(
+            "EXPORT", "artifacts.skill_root", ensure_outside_skill_tree,
+            output_dir, label="SMD split output",
+        )
+        document = _guard("EXPORT", "smd.read", read_smd, smd_path)
+        parts = _guard(
+            "EXPORT", "smd.split", split_smd_document, document,
+            max_vertices=int(max_vertices), max_normals=int(max_normals), max_triangles=int(max_triangles),
+        )
+        paths = []
+        stem = Path(smd_path).stem
+        for index, part in enumerate(parts, start=1):
+            path = output_dir / f"{stem}_part{index:03d}.smd"
+            write_smd(part, path)
+            paths.append({
+                "path": str(path), "triangles": len(part.triangles),
+                "vertices": len({(vertex.bone, *vertex.position) for triangle in part.triangles for vertex in triangle.vertices}),
+            })
+        return {"status": "pass", "source": str(Path(smd_path).resolve()), "parts": paths}
+
+    def tile_large_texture(
+        self, smd_path, image_path, output_dir, *, atlas_name=None, width, height,
+        tile_size=512, modes=(), alpha_threshold=128, uv_clamp_factor=None,
+        max_vertices=2048, max_normals=2048, max_triangles=20000,
+    ) -> dict:
+        output_dir = _guard(
+            "EXPORT", "artifacts.skill_root", ensure_outside_skill_tree,
+            output_dir, label="Large texture output",
+        )
+        image_path = Path(image_path).expanduser().resolve()
+        atlas_name = atlas_name or f"{image_path.stem}.bmp"
+        spec = _guard(
+            "EXPORT", "large_texture.spec", validate_large_texture_spec,
+            {"name": atlas_name, "image": image_path.name, "width": int(width), "height": int(height), "tile_size": int(tile_size)},
+        )
+        document = _guard("EXPORT", "smd.read", read_smd, smd_path)
+        tiled = _guard(
+            "EXPORT", "large_texture.smd", tile_smd_document, document,
+            atlas_name=str(spec["name"]), width=int(spec["width"]), height=int(spec["height"]),
+            tile_size=int(spec["tile_size"]), uv_clamp_factor=float(uv_clamp_factor or 1.0 / 512.0),
+        )
+        parts = _guard(
+            "EXPORT", "smd.split", split_smd_document, tiled.document,
+            max_vertices=int(max_vertices), max_normals=int(max_normals), max_triangles=int(max_triangles),
+        )
+        tiles = []
+        for tile_y in range(int(spec["height"]) // int(spec["tile_size"])):
+            for tile_x in range(int(spec["width"]) // int(spec["tile_size"])):
+                name = tile_names(str(spec["name"]), int(spec["width"]), int(spec["height"]), int(spec["tile_size"]))[
+                    tile_y * (int(spec["width"]) // int(spec["tile_size"])) + tile_x
+                ]
+                path = output_dir / name
+                facts = _guard(
+                    "EXPORT", "large_texture.bmp", convert_image_tile_to_indexed_bmp,
+                    image_path, path, source_width=int(spec["width"]), source_height=int(spec["height"]),
+                    tile_x=tile_x, tile_y=tile_y, tile_size=int(spec["tile_size"]), modes=list(modes),
+                    alpha_threshold=int(alpha_threshold),
+                )
+                tiles.append({"name": name, "path": str(path), "facts": facts})
+        part_paths = []
+        stem = Path(smd_path).stem
+        for index, part in enumerate(parts, start=1):
+            path = output_dir / f"{stem}_part{index:03d}.smd"
+            write_smd(part, path)
+            part_paths.append({"path": str(path), "triangles": len(part.triangles)})
+        return {
+            "status": "pass", "atlas": str(spec["name"]),
+            "source_image": str(image_path), "tiles": tiles, "parts": part_paths,
+            "original_triangles": tiled.original_triangles,
+            "output_triangles": tiled.output_triangles,
+            "crossed_triangles": tiled.crossed_triangles,
+        }
 
     def compile_contract(self, contract_path, artifacts_dir) -> dict:
         return execute_stage("COMPILE", contract_path, artifacts_dir)

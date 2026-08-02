@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -14,6 +15,41 @@ from .smd import animation_budget_hint, audit_loop_endpoint, read_smd
 
 
 PUBLIC_STAGES = ("PREFLIGHT", "EXPORT", "COMPILE", "INSPECT", "ROUNDTRIP")
+
+
+def _apply_export_plan(contract: dict, root: Path) -> dict:
+    """Apply export-time SMD body parts before QC generation and MDL inspection."""
+
+    plan_path = (root / contract.get("outputs", {}).get("export_plan", "export_plan.json")).resolve()
+    if root not in plan_path.parents or not plan_path.is_file():
+        return contract
+    try:
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ToolchainError("COMPILE", "compile.export_plan", f"invalid export plan: {exc}") from exc
+    references = plan.get("references", [])
+    by_source = {
+        str(item.get("contract_source", "")).casefold(): item
+        for item in references
+        if isinstance(item, dict)
+    }
+    for body in contract.get("bodies", []):
+        item = by_source.get(str(body.get("source", "")).casefold())
+        if item is None:
+            item = by_source.get(Path(str(body.get("source", ""))).name.casefold())
+        sources = item.get("compiled_sources") if isinstance(item, dict) else None
+        if not isinstance(sources, list) or not sources:
+            continue
+        normalized = []
+        for source in sources:
+            if not isinstance(source, str) or not source.lower().endswith(".smd"):
+                raise ToolchainError("COMPILE", "compile.export_plan", "export plan contains an invalid SMD source")
+            path = (root / source).resolve()
+            if root not in path.parents or not path.is_file():
+                raise ToolchainError("COMPILE", "compile.export_plan", "export plan references a missing SMD", {"source": source})
+            normalized.append(source)
+        body["_compiled_sources"] = normalized
+    return contract
 
 
 def _requirements(
@@ -57,6 +93,7 @@ def run_export(contract_path: str | Path, artifacts_dir: str | Path) -> dict:
 def run_compile(contract_path: str | Path, artifacts_dir: str | Path) -> dict:
     root = Path(artifacts_dir).expanduser().resolve()
     contract = load_contract(contract_path, artifact_dir=root, require_files=True)
+    contract = _apply_export_plan(contract, root)
     compiler = resolve_toolchain().sven_studiomdl
     if compiler is None or not compiler.is_file():
         raise ToolchainError("COMPILE", "compile.compiler", "Sven StudioMDL is missing")
@@ -125,6 +162,7 @@ def run_compile(contract_path: str | Path, artifacts_dir: str | Path) -> dict:
 def run_inspect(contract_path: str | Path, artifacts_dir: str | Path) -> dict:
     root = Path(artifacts_dir).expanduser().resolve()
     contract = load_contract(contract_path, artifact_dir=root, require_files=True)
+    contract = _apply_export_plan(contract, root)
     mdl_path = (root / contract["outputs"]["sven_mdl"]).resolve()
     inspection = inspect_mdl(mdl_path)
     issues = validate_mdl_contract(inspection, contract)

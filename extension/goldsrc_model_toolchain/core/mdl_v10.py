@@ -388,7 +388,12 @@ def validate_mdl_contract(inspection: dict, contract: dict, *, tolerance: float 
     if [(name.casefold(), parent.casefold() if parent else None) for name, parent in actual_bones] != [(name.casefold(), parent.casefold() if parent else None) for name, parent in expected_bones]:
         fail("mdl.bones", "compiled bone graph differs from contract", expected=expected_bones, actual=actual_bones)
 
-    expected_bodyparts = [(body["name"], 1) for body in contract["bodies"]]
+    expected_bodyparts = []
+    for body in contract["bodies"]:
+        sources = body.get("_compiled_sources") or [body["source"]]
+        for index, _source in enumerate(sources):
+            name = body["name"] if len(sources) == 1 else f"{body['name']}_part{index + 1:03d}"
+            expected_bodyparts.append((name, 1))
     expected_bodyparts.extend((group["name"], len(group["choices"])) for group in contract["bodygroups"])
     actual_bodyparts = [(item["name"], item["model_count"]) for item in inspection["bodyparts"]]
     if [(a.casefold(), b) for a, b in actual_bodyparts] != [(a.casefold(), b) for a, b in expected_bodyparts]:

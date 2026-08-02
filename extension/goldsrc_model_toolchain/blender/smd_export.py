@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 from pathlib import Path
 from typing import Iterable
@@ -10,9 +11,16 @@ import bpy
 from mathutils import Matrix, Vector
 
 from ..core.errors import ToolchainError
+from ..core.large_textures import LargeTextureError, split_smd_document, tile_smd_document, write_smd
 from ..core.model_contract import load_contract, write_qc
-from ..core.smd import animation_budget_hint, audit_loop_endpoint, read_smd, validate_smd
-from ..core.textures import convert_rgba_to_indexed_bmp, convert_to_indexed_bmp, validate_indexed_bmp
+from ..core.smd import animation_budget_hint, audit_loop_endpoint, geometry_budget, read_smd, validate_smd
+from ..core.textures import (
+    convert_image_tile_to_indexed_bmp,
+    convert_rgba_tile_to_indexed_bmp,
+    convert_rgba_to_indexed_bmp,
+    convert_to_indexed_bmp,
+    validate_indexed_bmp,
+)
 
 
 def _inside(path: Path, root: Path) -> bool:
@@ -131,6 +139,16 @@ def _image_hints(material) -> list[str]:
 def _material_token(material, contract: dict) -> str:
     names = {texture["name"].casefold(): texture["name"] for texture in contract["textures"]}
     sources = {Path(texture["source"]).name.casefold(): texture["name"] for texture in contract["textures"]}
+    large_aliases = {
+        str(atlas["name"]).casefold(): str(atlas["name"])
+        for atlas in contract.get("large_textures", [])
+        if isinstance(atlas, dict) and isinstance(atlas.get("name"), str)
+    }
+    large_images = {
+        str(atlas["image"]).casefold(): str(atlas["name"])
+        for atlas in contract.get("large_textures", [])
+        if isinstance(atlas, dict) and isinstance(atlas.get("name"), str) and isinstance(atlas.get("image"), str)
+    }
     candidates = []
     if material:
         custom = material.get("goldsrc_texture_token")
@@ -144,6 +162,12 @@ def _material_token(material, contract: dict) -> str:
             return names[key]
         if key in sources:
             return sources[key]
+        if key in large_aliases:
+            return large_aliases[key]
+        if key in large_images:
+            return large_images[key]
+        if f"{key}.bmp" in large_aliases:
+            return large_aliases[f"{key}.bmp"]
     raise ToolchainError(
         "EXPORT", "export.material", "Mesh material does not resolve to a contract texture",
         {"material": material.name if material else None, "image_hints": _image_hints(material)},
@@ -274,6 +298,103 @@ def _export_reference(path: Path, contract: dict, obj, armature) -> dict:
     return facts
 
 
+def _remove_previous_parts(path: Path, contract: dict, artifact_root: Path, contract_source: str) -> None:
+    plan_path = _artifact_path(
+        artifact_root,
+        contract["outputs"].get("export_plan", "export_plan.json"),
+        "EXPORT",
+    )
+    if not plan_path.is_file():
+        return
+    try:
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    current_source = str(contract_source).replace("\\", "/").casefold()
+    for item in plan.get("references", []):
+        previous_source = str(item.get("contract_source", "")).replace("\\", "/").casefold() if isinstance(item, dict) else ""
+        if not isinstance(item, dict) or previous_source != current_source:
+            continue
+        for source in item.get("compiled_sources", []):
+            if not isinstance(source, str) or source.replace("\\", "/").casefold() == current_source:
+                continue
+            try:
+                candidate = _artifact_path(artifact_root, source, "EXPORT")
+            except ToolchainError:
+                continue
+            if candidate.parent.resolve() != path.parent.resolve() or not candidate.stem.casefold().startswith(f"{path.stem}_part".casefold()):
+                continue
+            if candidate.is_file():
+                candidate.unlink()
+
+
+def _prepare_reference_parts(path: Path, contract: dict, artifact_root: Path, contract_source: str) -> dict:
+    document = read_smd(path)
+    tiling_reports = []
+    _remove_previous_parts(path, contract, artifact_root, contract_source)
+    try:
+        for atlas in contract.get("large_textures", []):
+            if not isinstance(atlas, dict):
+                continue
+            atlas_name = str(atlas["name"])
+            if atlas_name.casefold() not in {material.casefold() for material in document.materials}:
+                continue
+            result = tile_smd_document(
+                document,
+                atlas_name=atlas_name,
+                width=int(atlas["width"]),
+                height=int(atlas["height"]),
+                tile_size=int(atlas.get("tile_size", 512)),
+                uv_clamp_factor=float(atlas.get("uv_clamp_factor", 1.0 / 512.0)),
+            )
+            document = result.document
+            tiling_reports.append({
+                "atlas": atlas_name,
+                "tiles": list(result.tiles),
+                "original_triangles": result.original_triangles,
+                "output_triangles": result.output_triangles,
+                "crossed_triangles": result.crossed_triangles,
+            })
+        parts = split_smd_document(document)
+    except LargeTextureError as exc:
+        raise ToolchainError("EXPORT", "export.large_texture", str(exc), {"path": str(path)}) from exc
+
+    source_names = []
+    for index, part in enumerate(parts):
+        if index == 0:
+            destination = path
+        else:
+            destination = path.with_name(f"{path.stem}_part{index + 1:03d}{path.suffix}")
+        write_smd(part, destination)
+        try:
+            relative = destination.resolve().relative_to(artifact_root.resolve()).as_posix()
+        except ValueError as exc:
+            raise ToolchainError(
+                "EXPORT", "export.smd_path", "Prepared SMD escaped the artifact directory", {"path": str(destination)},
+            ) from exc
+        source_names.append(relative)
+        issues = validate_smd(read_smd(destination), require_triangles=True)
+        if issues:
+            raise ToolchainError(
+                "EXPORT", "export.smd_validation", "Prepared SMD failed validation",
+                {"path": str(destination), "issues": issues},
+            )
+    return {
+        "source": source_names[0],
+        "compiled_sources": source_names,
+        "parts": [
+            {
+                "path": source_names[index],
+                "triangles": len(part.triangles),
+                "geometry_budget": geometry_budget(part, target_profile=contract["target_profile"]),
+            }
+            for index, part in enumerate(parts)
+        ],
+        "triangles": sum(len(part.triangles) for part in parts),
+        "large_texture_tiling": tiling_reports,
+    }
+
+
 def _bind_action(armature, action) -> None:
     if not armature.animation_data:
         armature.animation_data_create()
@@ -319,6 +440,11 @@ def _export_animation(path: Path, contract: dict, sequence: dict, armature) -> d
 
 def _texture_image(texture: dict):
     wanted = {texture["name"].casefold(), Path(texture["source"]).name.casefold()}
+    atlas = texture.get("_large_texture")
+    if isinstance(atlas, dict):
+        for key in (atlas.get("name"), atlas.get("image")):
+            if isinstance(key, str):
+                wanted.add(Path(key).name.casefold())
     for image in bpy.data.images:
         candidates = {image.name.casefold(), Path(bpy.path.abspath(image.filepath or image.name)).name.casefold()}
         if wanted & candidates:
@@ -350,6 +476,45 @@ def _export_texture(root: Path, texture: dict) -> dict:
     modes = texture.get("modes", [])
     alpha_threshold = int(texture.get("alpha_threshold", 128))
     require_masked_pixels = bool(texture.get("require_masked_pixels", True))
+    atlas = texture.get("_large_texture")
+    if isinstance(atlas, dict):
+        source_width = int(atlas["width"])
+        source_height = int(atlas["height"])
+        tile_x = int(atlas["tile_x"])
+        tile_y = int(atlas["tile_y"])
+        tile_size = int(atlas["tile_size"])
+        filepath = bpy.path.abspath(image.filepath or "")
+        disk_source = Path(filepath).expanduser().resolve() if filepath else None
+        if (
+            image.source in {"FILE", "SEQUENCE"}
+            and disk_source is not None
+            and disk_source.is_file()
+            and not bool(getattr(image, "is_dirty", False))
+        ):
+            facts = convert_image_tile_to_indexed_bmp(
+                disk_source, destination, source_width=source_width, source_height=source_height,
+                tile_x=tile_x, tile_y=tile_y, tile_size=tile_size, modes=modes,
+                alpha_threshold=alpha_threshold, require_masked_pixels=require_masked_pixels,
+            )
+        else:
+            facts = convert_rgba_tile_to_indexed_bmp(
+                image.pixels[:], destination, source_width=source_width, source_height=source_height,
+                tile_x=tile_x, tile_y=tile_y, tile_size=tile_size, modes=modes,
+                alpha_threshold=alpha_threshold, input_color_space="linear",
+                require_masked_pixels=require_masked_pixels,
+            )
+        facts["conversion"]["blender_image"] = image.name
+        facts["large_texture"] = {
+            "atlas": atlas["name"], "source_dimensions": [source_width, source_height],
+            "tile": [tile_x, tile_y], "tile_size": tile_size,
+        }
+        hard_risks = sorted(set(facts["risk_labels"]) & {"no_visible_pixels", "all_visible_pixels_black"})
+        if hard_risks:
+            raise ToolchainError(
+                "EXPORT", "export.texture_luminance", "Exported indexed texture has no usable visible luminance",
+                {"texture": texture["name"], "risk_labels": hard_risks},
+            )
+        return {**facts, "required_masked_pixels": require_masked_pixels}
     filepath = bpy.path.abspath(image.filepath or "")
     disk_source = Path(filepath).expanduser().resolve() if filepath else None
     if (
@@ -434,6 +599,7 @@ def export_contract(contract_path: str | Path, artifacts_dir: str | Path) -> dic
     } if armature else {}
     references = []
     animations = []
+    export_plan = []
     try:
         if armature and armature.animation_data:
             armature.animation_data.action = None
@@ -443,7 +609,21 @@ def export_contract(contract_path: str | Path, artifacts_dir: str | Path) -> dic
         scene.frame_set(scene.frame_start)
         bpy.context.view_layer.update()
         for source, obj, label in resolved:
-            facts = _export_reference(_artifact_path(root, source, "EXPORT"), contract, obj, armature)
+            source_path = _artifact_path(root, source, "EXPORT")
+            facts = _export_reference(source_path, contract, obj, armature)
+            prepared = _prepare_reference_parts(source_path, contract, root, source)
+            if label.startswith("bodygroup:") and len(prepared["compiled_sources"]) > 1:
+                raise ToolchainError(
+                    "EXPORT", "export.bodygroup_split",
+                    "Large-texture or geometry splitting of bodygroup choices is not supported yet",
+                    {"label": label, "parts": prepared["compiled_sources"]},
+                )
+            facts["prepared"] = prepared
+            export_plan.append({
+                "label": label,
+                "contract_source": source,
+                **prepared,
+            })
             facts["label"] = label
             references.append(facts)
         for sequence in contract["sequences"]:
@@ -456,6 +636,8 @@ def export_contract(contract_path: str | Path, artifacts_dir: str | Path) -> dic
             _bind_action(armature, previous_action)
         scene.frame_set(previous_frame)
     textures = [{"name": texture["name"], **_export_texture(root, texture)} for texture in contract["textures"]]
+    plan_path = _artifact_path(root, contract["outputs"].get("export_plan", "export_plan.json"), "EXPORT")
+    plan_path.write_text(json.dumps({"version": 1, "references": export_plan}, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     qc = write_qc(contract, root)
     load_contract(contract_path, artifact_dir=root, require_files=True)
     evidence = {
@@ -481,6 +663,7 @@ def export_contract(contract_path: str | Path, artifacts_dir: str | Path) -> dic
         "references": references,
         "animations": animations,
         "textures": textures,
+        "export_plan": str(plan_path),
         "qc": str(qc),
         "requirement_evidence": _requirement_evidence(contract, "export", evidence),
     }

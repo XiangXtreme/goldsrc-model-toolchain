@@ -27,6 +27,25 @@ For every reference SMD, evaluate final modifiers, triangulate loop triangles, e
 
 Generated/loaded texture pixels are converted to indexed BMP inside the Extension. Pillow `12.3.0` is preferred; the Blender image fallback must produce the same legal 8-bit indexed structure deterministically. Validate dimensions, 256-entry palette, masked index 255, used colors, and visible luminance before compilation.
 
+## Large Textures And SMD Budgets
+
+GoldSrc MDL texture records remain limited to `512x512` in the conservative Half-Life/Counter-Strike route. Declare a source atlas in `large_textures` when the author image is larger than 512 pixels:
+
+```json
+{
+  "name": "terrain_base.bmp",
+  "image": "TerrainBase_2K",
+  "width": 2048,
+  "height": 2048,
+  "tile_size": 512,
+  "modes": ["nomips"]
+}
+```
+
+The contract expands this logical record to sixteen `512x512` texture records. EXPORT reads the file-backed atlas or Blender RGBA buffer, crops bottom-origin tiles, emits indexed BMPs, and rewrites the SMD material token to the tile filename. Triangles crossing a tile boundary are UV-clipped and fan-triangulated before their local UVs are written. A single MDL supports at most 64 declared tiles; a larger atlas needs multiple deliverables and is rejected by the current contract.
+
+Each reference SMD is then measured by compiled `(bone, position)` vertices, `(bone, normal)` entries, and triangles. When one source exceeds `2048`, `2048`, or `20000`, EXPORT preserves triangle order and emits `*_partNNN.smd` files. COMPILE adds those parts as separate always-present `$body` entries and INSPECT checks the resulting bodyparts. This is a per-submodel split, not a raw text slice; `smdcutpy.py` does not handle compiled deduplication, UV clipping, bones, or QC contract updates.
+
 ## Stage Interfaces
 
 The public operator supports only `PREFLIGHT`, `EXPORT`, `COMPILE`, `INSPECT`, and `ROUNDTRIP`. Every invocation executes one stage and writes one JSON report inside `artifacts_dir`. A report path escaping that directory is rejected.

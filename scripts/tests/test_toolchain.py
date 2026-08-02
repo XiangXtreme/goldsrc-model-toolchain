@@ -26,6 +26,7 @@ from goldsrc_toolchain.mdl_v10 import (
     validate_mdl_contract,
 )
 from goldsrc_toolchain.model_contract import ContractError, effective_texture_modes, render_qc, validate_contract
+from goldsrc_toolchain.large_textures import split_smd_document, tile_name, tile_smd_document, write_smd
 from goldsrc_toolchain.paths import ensure_outside_skill_tree, resolve_artifact_root
 from goldsrc_toolchain.stages import _requirements
 from goldsrc_toolchain.smd import (
@@ -48,6 +49,7 @@ from goldsrc_toolchain.textures import (
     TextureError,
     _convert_with_blender_image,
     _write_indexed_bmp_from_rgba,
+    convert_image_tile_to_indexed_bmp,
     convert_rgba_to_indexed_bmp,
     convert_to_indexed_bmp,
     validate_indexed_bmp,
@@ -438,6 +440,70 @@ class StageEvidenceTests(unittest.TestCase):
         self.assertIn("did not pass", evidence[0]["summary"])
 
 
+class LargeTextureTests(unittest.TestCase):
+    def _crossing_document(self):
+        return parse_smd(
+            'version 1\n'
+            'nodes\n0 "root" -1\nend\n'
+            'skeleton\ntime 0\n0 0 0 0 0 0 0\nend\n'
+            'triangles\n'
+            'atlas.bmp\n'
+            '0 0 0 0 0 0 1 0.25 0.25\n'
+            '0 1 0 0 0 0 1 0.75 0.25\n'
+            '0 0 1 0 0 0 1 0.25 0.75\n'
+            'end\n'
+        )
+
+    def test_large_atlas_tiles_crossing_triangle_and_remaps_uv(self) -> None:
+        result = tile_smd_document(
+            self._crossing_document(), atlas_name="atlas.bmp", width=1024, height=1024,
+        )
+        self.assertGreater(result.output_triangles, 1)
+        self.assertEqual(set(result.tiles), {tile_name("atlas.bmp", 0, 0), tile_name("atlas.bmp", 1, 0), tile_name("atlas.bmp", 0, 1)})
+        self.assertTrue(all(0.0 < value < 1.0 for triangle in result.document.triangles for vertex in triangle.vertices for value in vertex.uv))
+
+    def test_smd_budget_split_preserves_all_triangles(self) -> None:
+        document = parse_smd(
+            'version 1\n'
+            'nodes\n0 "root" -1\nend\n'
+            'skeleton\ntime 0\n0 0 0 0 0 0 0\nend\n'
+            'triangles\n'
+            + "".join(
+                f'base.bmp\n0 {index * 3} 0 0 0 0 1 0 0\n'
+                f'0 {index * 3 + 1} 0 0 0 0 1 1 0\n'
+                f'0 {index * 3} 1 0 0 0 1 0 1\n'
+                for index in range(3)
+            )
+            + 'end\n'
+        )
+        parts = split_smd_document(document, max_vertices=4, max_normals=4, max_triangles=20000)
+        self.assertEqual([len(part.triangles) for part in parts], [1, 1, 1])
+        self.assertEqual(sum(len(part.triangles) for part in parts), len(document.triangles))
+
+    def test_large_texture_contract_expands_to_512_tiles(self) -> None:
+        contract = base_contract()
+        contract["textures"] = []
+        contract["large_textures"] = [{
+            "name": "atlas.bmp", "image": "Atlas_2K", "width": 2048, "height": 2048,
+            "tile_size": 512, "modes": ["nomips"],
+        }]
+        normalized = validate_contract(contract)
+        self.assertEqual(len(normalized["textures"]), 16)
+        self.assertEqual(normalized["textures"][0]["width"], 512)
+        self.assertIn("export_plan", normalized["outputs"])
+        self.assertIn('$texrendermode "atlas_00_00.bmp" nomips', render_qc(normalized))
+
+    def test_large_texture_allows_a_single_atlas_axis(self) -> None:
+        contract = base_contract()
+        contract["textures"] = []
+        contract["large_textures"] = [{
+            "name": "atlas.bmp", "image": "Atlas_1Kx512", "width": 1024, "height": 512,
+            "tile_size": 512, "modes": ["nomips"],
+        }]
+        normalized = validate_contract(contract)
+        self.assertEqual(len(normalized["textures"]), 2)
+
+
 class AnimationEvidenceTests(unittest.TestCase):
     def test_rotation_comparison_accepts_equivalent_xyz_euler_channels(self) -> None:
         error = euler_xyz_rotation_error(
@@ -722,6 +788,27 @@ class TextureTests(unittest.TestCase):
             self.assertLessEqual(fidelity["mean_absolute_channel_error"], 1.0)
             self.assertLessEqual(fidelity["max_absolute_channel_error"], 1)
 
+    def test_file_atlas_tile_uses_bottom_origin_tile_coordinates(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "atlas.png"
+            image = Image.new("RGBA", (1024, 1024), (0, 0, 0, 255))
+            for y in range(1024):
+                color = (220, 40, 40, 255) if y < 512 else (40, 220, 40, 255)
+                for x in range(1024):
+                    image.putpixel((x, y), color)
+            image.save(source)
+            convert_image_tile_to_indexed_bmp(
+                source, root / "bottom.bmp", source_width=1024, source_height=1024,
+                tile_x=0, tile_y=0,
+            )
+            convert_image_tile_to_indexed_bmp(
+                source, root / "top.bmp", source_width=1024, source_height=1024,
+                tile_x=0, tile_y=1,
+            )
+            self.assertEqual(Image.open(root / "bottom.bmp").convert("RGB").getpixel((0, 0)), (40, 220, 40))
+            self.assertEqual(Image.open(root / "top.bmp").convert("RGB").getpixel((0, 0)), (220, 40, 40))
+
     def test_rgba_converter_declares_bottom_left_linear_input(self) -> None:
         rgba = []
         for bottom_row in range(16):
@@ -843,6 +930,58 @@ class CompilerIntegrationTests(unittest.TestCase):
             changed = copy.deepcopy(normalized)
             changed["bounds"]["bbox"]["max"][0] = 2
             self.assertTrue(any(item["code"] == "mdl.bbox" for item in validate_mdl_contract(inspection, changed)))
+
+    def test_export_plan_compiles_split_reference_as_bodyparts(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            lines = [
+                "version 1", "nodes", '0 "root" -1', "end", "skeleton", "time 0",
+                "0 0 0 0 0 0 0", "end", "triangles",
+            ]
+            for vertex in range(0, 2051, 3):
+                lines.append("base.bmp")
+                for index in range(vertex, vertex + 3):
+                    lines.append(f"0 {index} 0 0 0 0 1 0 0")
+            lines.append("end")
+            document = parse_smd("\n".join(lines) + "\n")
+            parts = split_smd_document(document)
+            self.assertGreater(len(parts), 1)
+            write_smd(parts[0], root / "reference.smd")
+            for index, part in enumerate(parts[1:], start=2):
+                write_smd(part, root / f"reference_part{index:03d}.smd")
+            (root / "idle.smd").write_text(IDLE_SMD, encoding="utf-8")
+            source = root / "source.png"
+            Image.new("RGBA", (64, 64), (100, 120, 140, 255)).save(source)
+            convert_to_indexed_bmp(source, root / "base.bmp", width=64, height=64)
+            (root / "export_plan.json").write_text(json.dumps({
+                "version": 1,
+                "references": [{
+                    "contract_source": "reference.smd",
+                    "compiled_sources": [
+                        "reference.smd",
+                        *[f"reference_part{index:03d}.smd" for index in range(2, len(parts) + 1)],
+                    ],
+                }],
+            }), encoding="utf-8")
+            contract = base_contract()
+            contract["model_name"] = "split_model.mdl"
+            contract["outputs"] = {
+                "sven_mdl": "split_model.mdl",
+                "qc": "split_model.qc",
+                "export_plan": "export_plan.json",
+            }
+            contract_path = root / "model_contract.json"
+            contract_path.write_text(json.dumps(contract), encoding="utf-8")
+            completed = subprocess.run(
+                [sys.executable, str(SCRIPT_DIR / "compile_model.py"), str(contract_path)],
+                capture_output=True, text=True, errors="replace", timeout=60,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+            inspection = inspect_mdl(root / "split_model.mdl")
+            self.assertEqual(
+                [(item["name"], item["model_count"]) for item in inspection["bodyparts"]],
+                [("body_part001", 1), ("body_part002", 1)],
+            )
 
     def test_animation_audit_uses_smd_declaration_order_for_nonzero_start_frame(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

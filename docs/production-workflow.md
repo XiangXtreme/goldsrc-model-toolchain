@@ -61,6 +61,8 @@ Before export, treat preflight diagnostics as repair clues: when Blender appends
 
 For modifier-driven or procedural meshes, treat the dependency-graph evaluated surface as the export boundary. Preflight and EXPORT must report the evaluated active UV, UV bounds, material slots, and resolved material tokens. A selected object must first be frozen into the contract, and PBR/procedural author materials must be baked to an explicit GoldSrc UV/image by the authoring workflow; the Extension does not infer either operation.
 
+For an author image larger than 512 pixels, keep the author atlas at its source resolution and declare it under `large_textures`. The MDL contains only generated `512x512` indexed tiles. Confirm the export report's tile list, cross-tile triangle count, local UV bounds, embedded MDL texture dimensions, and texture count. When the evaluated reference exceeds a submodel budget, accept only the generated multi-body plan and its per-part geometry reports; do not copy a raw `smdcutpy.py` slice into the QC.
+
 Before compilation, record the SMD animation budget hint for every sequence. It estimates frame-count, bone-count, and channel-density pressure and may suggest a `sample_step`, but it is not a compiler result. Never reduce sampling solely to hide a timing or motion failure; any permitted downsampling must preserve the declared duration/FPS contract and be revalidated against the exported animation.
 
 Treat declared outputs as immutable after their stage finishes. A cache hit re-hashes every output and rejects missing or modified evidence; downstream stages must write new files rather than save changes back into an upstream Blend checkpoint.

@@ -6,6 +6,8 @@ The Extension provides GoldSrc SMD/QC import and export, indexed BMP conversion,
 
 Version `1.3.3` adds labeled `3x2` contact sheets for five-point Action readback while preserving every original still and its hash. The same Blender-independent compositor is available through the runtime API for author/readback comparisons and physics-event evidence. The current source also reports evaluated UV/material facts and propagates failed preflight evidence as `status: fail`. Multi-source blend sequence authoring remains an explicit limitation.
 
+The current source also supports logical large textures and over-budget reference SMDs. A logical `2048x2048` atlas is exported as sixteen `512x512` indexed BMPs inside one MDL; EXPORT clips and retriangulates triangles crossing tile boundaries, then remaps each triangle to local tile UVs. GoldSrc does not receive a `2048x2048` texture entry. Reference SMDs are split by compiled `(bone, position)`, `(bone, normal)`, and triangle budgets into multiple `$body` entries. Bodygroup choices are rejected when they need splitting. Simple line slicers such as `smdcutpy.py` are not a substitute for this path.
+
 ## Install
 
 Download `goldsrc_model_toolchain-1.3.3-windows-x64.zip` and its checksum from the [v1.3.3 release](https://github.com/XiangXtreme/goldsrc-model-toolchain/releases/tag/v1.3.3), verify SHA-256, then install the ZIP as a Blender Extension in the `user_default` repository.
@@ -25,6 +27,8 @@ api.execute_stage("PREFLIGHT", contract_path, artifacts_dir)
 api.import_smd_animation(animation_smd, reference_smd=reference_smd)
 api.decompile_mdl(mdl_path, artifacts_dir)
 api.create_visual_contact_sheet(items, destination, columns=3, title="Readback")
+api.tile_large_texture(smd_path, image_path, output_dir, width=2048, height=2048)
+api.split_smd_for_goldsrc(smd_path, output_dir)
 ```
 
 The background operator is:

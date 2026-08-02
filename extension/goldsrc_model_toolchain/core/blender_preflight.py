@@ -169,7 +169,17 @@ def inspect_scene(contract: dict[str, Any], *, bpy_module=None) -> dict[str, Any
         issues.append(_issue("scene.no_meshes", "no exported mesh objects were found"))
 
     bone_names = {bone["name"] for bone in contract["bones"]}
-    declared_materials = {texture["name"] for texture in contract["textures"]}
+    declared_materials = {
+        value
+        for texture in contract["textures"]
+        for value in (texture["name"], Path(texture["name"]).stem)
+    }
+    declared_materials.update(
+        value
+        for atlas in contract.get("large_textures", [])
+        if isinstance(atlas, dict) and isinstance(atlas.get("name"), str)
+        for value in (atlas["name"], Path(atlas["name"]).stem)
+    )
     mesh_facts = []
     for obj in meshes:
         evaluated_vertices, evaluated_polygons, evaluated_triangles = _evaluated_mesh_counts(obj, bpy)
@@ -177,23 +187,25 @@ def inspect_scene(contract: dict[str, Any], *, bpy_module=None) -> dict[str, Any
         if evaluated_vertices > GOLDSRC_MAX_MODEL_VERTICES:
             issues.append(_issue(
                 "mesh.vertex_budget",
-                f"{obj.name} evaluates to {evaluated_vertices} vertices; the bundled GoldSrc compiler allows {GOLDSRC_MAX_MODEL_VERTICES} per submodel",
-                severity="error",
+                f"{obj.name} evaluates to {evaluated_vertices} vertices; EXPORT will split triangles into body parts at the bundled {GOLDSRC_MAX_MODEL_VERTICES}-vertex submodel limit",
+                severity="warning",
                 object=obj.name,
                 evaluated_vertices=evaluated_vertices,
                 limit=GOLDSRC_MAX_MODEL_VERTICES,
                 target_profile=contract["target_profile"],
+                export_split=True,
             ))
         if evaluated_triangles > GOLDSRC_MAX_MODEL_TRIANGLES:
             issues.append(_issue(
                 "mesh.triangle_budget",
-                f"{obj.name} evaluates to {evaluated_triangles} triangles; the bundled GoldSrc compiler allows {GOLDSRC_MAX_MODEL_TRIANGLES} per submodel",
-                severity="error",
+                f"{obj.name} evaluates to {evaluated_triangles} triangles; EXPORT will split triangles into body parts at the bundled {GOLDSRC_MAX_MODEL_TRIANGLES}-triangle submodel limit",
+                severity="warning",
                 object=obj.name,
                 evaluated_polygons=evaluated_polygons,
                 evaluated_triangles=evaluated_triangles,
                 limit=GOLDSRC_MAX_MODEL_TRIANGLES,
                 target_profile=contract["target_profile"],
+                export_split=True,
             ))
         if any(abs(value - 1.0) > 0.00001 for value in obj.scale):
             issues.append(_issue("mesh.scale", f"apply scale on {obj.name}", object=obj.name, scale=list(obj.scale)))

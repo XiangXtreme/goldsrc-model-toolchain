@@ -104,7 +104,7 @@ class BlenderPreflightTests(unittest.TestCase):
         self.assertEqual(facts["uv_bounds"], {"min": [0.1, 0.2], "max": [0.9, 0.8]})
         self.assertEqual(facts["material_slots"], ["terrain_base.bmp"])
 
-    def test_vertex_overflow_is_an_error_for_every_bundled_profile(self) -> None:
+    def test_vertex_overflow_is_export_split_warning_for_every_bundled_profile(self) -> None:
         for profile in ("half-life-cs", "sven-coop"):
             with self.subTest(profile=profile):
                 contract = copy.deepcopy(base_contract())
@@ -115,8 +115,9 @@ class BlenderPreflightTests(unittest.TestCase):
                 ):
                     report = inspect_scene(contract, bpy_module=fake_scene())
                 budget = next(item for item in report["issues"] if item["code"] == "mesh.vertex_budget")
-                self.assertEqual(report["status"], "fail")
-                self.assertEqual(budget["severity"], "error")
+                self.assertEqual(report["status"], "pass")
+                self.assertEqual(budget["severity"], "warning")
+                self.assertTrue(budget["context"]["export_split"])
 
     def test_playback_requires_bound_action_and_start_frame(self) -> None:
         report = inspect_scene(base_contract(), bpy_module=fake_scene(frame_current=12, action_bound=False))

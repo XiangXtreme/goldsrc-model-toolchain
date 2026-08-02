@@ -9,6 +9,7 @@ import re
 from pathlib import Path, PureWindowsPath
 from typing import Any, Iterable
 
+from .large_textures import LargeTextureError, tile_name, validate_large_texture_spec
 from .smd import SmdError, geometry_budget, read_smd, validate_smd
 from .textures import TextureError, validate_indexed_bmp
 from .physics_events import normalize_physics, validate_physics_definition
@@ -26,6 +27,57 @@ DEFAULT_PHASES = [
 ]
 REQUIREMENT_EVIDENCE_PHASES = set(DEFAULT_PHASES) - {"environment"}
 _NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+
+def _expand_large_textures(contract: dict[str, Any]) -> None:
+    """Materialize 512px tile records while retaining the logical atlas declaration."""
+
+    atlases = contract.get("large_textures", [])
+    textures = list(contract.get("textures", []))
+    names = {
+        item.get("name", "").casefold()
+        for item in textures
+        if isinstance(item, dict) and isinstance(item.get("name"), str)
+    }
+    if not isinstance(atlases, list):
+        return
+    for atlas in atlases:
+        if not isinstance(atlas, dict):
+            continue
+        try:
+            normalized = validate_large_texture_spec(atlas)
+        except LargeTextureError:
+            continue
+        name = str(normalized["name"])
+        image = str(normalized["image"])
+        width = int(normalized["width"])
+        height = int(normalized["height"])
+        tile_size = int(normalized["tile_size"])
+        for tile_y in range(height // tile_size):
+            for tile_x in range(width // tile_size):
+                tile = tile_name(name, tile_x, tile_y)
+                if tile.casefold() in names:
+                    continue
+                textures.append({
+                    "name": tile,
+                    "source": tile,
+                    "width": tile_size,
+                    "height": tile_size,
+                    "modes": list(atlas.get("modes", [])),
+                    "alpha_threshold": atlas.get("alpha_threshold", 128),
+                    "require_masked_pixels": atlas.get("require_masked_pixels", True),
+                    "_large_texture": {
+                        "name": name,
+                        "image": image,
+                        "width": width,
+                        "height": height,
+                        "tile_size": tile_size,
+                        "tile_x": tile_x,
+                        "tile_y": tile_y,
+                    },
+                })
+                names.add(tile.casefold())
+    contract["textures"] = textures
 
 
 class ContractError(ValueError):
@@ -176,14 +228,16 @@ def normalize_contract(value: dict[str, Any]) -> dict[str, Any]:
     contract.setdefault("version", CONTRACT_VERSION)
     contract.setdefault("target_profile", "half-life-cs")
     contract.setdefault("scale", 1.0)
-    for key in ("bones", "bone_renames", "bodies", "bodygroups", "textures", "skin_families", "sequences", "hitboxes", "attachments", "controllers"):
+    for key in ("bones", "bone_renames", "bodies", "bodygroups", "textures", "large_textures", "skin_families", "sequences", "hitboxes", "attachments", "controllers"):
         contract.setdefault(key, [])
+    _expand_large_textures(contract)
     model_name = contract.get("model_name", "model.mdl")
     stem = Path(str(model_name)).stem or "model"
     outputs = contract.setdefault("outputs", {})
     outputs.setdefault("qc", f"{stem}.qc")
     outputs.setdefault("sven_mdl", str(model_name))
     outputs.setdefault("report", "model_pipeline_report.json")
+    outputs.setdefault("export_plan", "export_plan.json")
     acceptance = contract.setdefault("acceptance", {})
     acceptance.setdefault("required_phases", list(DEFAULT_PHASES))
     acceptance.setdefault("visual_views", ["front", "three_quarter", "side"])
@@ -349,6 +403,26 @@ def validate_contract(
                     source_paths.append((label, source, True))
                 if not isinstance(choice.get("object"), str) or not choice["object"].strip():
                     errors.append(f"{label}.object must name a Blender mesh object")
+
+    large_texture_names: set[str] = set()
+    large_textures = contract["large_textures"]
+    if not isinstance(large_textures, list):
+        errors.append("large_textures must be a list")
+        large_textures = []
+    for index, atlas in enumerate(large_textures):
+        if not isinstance(atlas, dict):
+            errors.append(f"large_textures[{index}] must be an object")
+            continue
+        try:
+            normalized_atlas = validate_large_texture_spec(atlas)
+        except LargeTextureError as exc:
+            errors.append(f"large_textures[{index}]: {exc}")
+            continue
+        name = str(normalized_atlas["name"])
+        key = name.casefold()
+        if key in large_texture_names:
+            errors.append(f"duplicate large texture name: {name}")
+        large_texture_names.add(key)
 
     texture_names = _unique_names(contract["textures"], "textures", errors)
     textures = {item.get("name", "").casefold(): item for item in contract["textures"] if isinstance(item, dict)}
@@ -549,7 +623,7 @@ def validate_contract(
                         f"{label} GoldSrc triangle budget exceeded: "
                         f"{budget['triangles']} > {budget['triangle_limit']}"
                     )
-        missing_materials = referenced_materials - texture_names
+        missing_materials = referenced_materials - (texture_names | large_texture_names)
         for material in sorted(missing_materials):
             errors.append(f"SMD material is absent from textures: {material}")
         rename_map = {
@@ -631,7 +705,10 @@ def render_qc(contract: dict[str, Any]) -> str:
     for rename in contract["bone_renames"]:
         lines.append(f'$renamebone "{rename["source"]}" "{rename["target"]}"')
     for body in contract["bodies"]:
-        lines.append(f'$body "{body["name"]}" "{_quoted_source(body["source"])}"')
+        sources = body.get("_compiled_sources") or [body["source"]]
+        for index, source in enumerate(sources):
+            name = body["name"] if len(sources) == 1 else f"{body['name']}_part{index + 1:03d}"
+            lines.append(f'$body "{name}" "{_quoted_source(source)}"')
     for group in contract["bodygroups"]:
         lines.extend([f'$bodygroup "{group["name"]}"', "{"])
         for choice in group["choices"]:

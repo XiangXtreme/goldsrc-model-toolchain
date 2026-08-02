@@ -477,3 +477,96 @@ def convert_to_indexed_bmp(
         "fidelity": _texture_fidelity(source, destination_path, masked=masked, alpha_threshold=alpha_threshold),
     }
     return facts
+
+
+def _validate_tile_dimensions(width: int, height: int) -> None:
+    if width <= 0 or height <= 0 or width > 512 or height > 512 or width % 16 or height % 16:
+        raise TextureError("GoldSrc tile dimensions must be multiples of 16 within 1..512")
+
+
+def convert_image_tile_to_indexed_bmp(
+    source: Path | str,
+    destination: Path | str,
+    *,
+    source_width: int,
+    source_height: int,
+    tile_x: int,
+    tile_y: int,
+    tile_size: int = 512,
+    modes: list[str] | tuple[str, ...] = (),
+    alpha_threshold: int = 128,
+    require_masked_pixels: bool = True,
+) -> dict:
+    """Crop one bottom-origin atlas tile and encode it as an indexed BMP."""
+
+    _validate_tile_dimensions(tile_size, tile_size)
+    if source_width <= 0 or source_height <= 0 or source_width % tile_size or source_height % tile_size:
+        raise TextureError("large texture source dimensions must divide evenly into tile_size")
+    count_x, count_y = source_width // tile_size, source_height // tile_size
+    if not 0 <= tile_x < count_x or not 0 <= tile_y < count_y:
+        raise TextureError("large texture tile index is outside the source atlas")
+    source_path = Path(source).expanduser().resolve()
+    destination_path = Path(destination).expanduser().resolve()
+    masked = "masked" in {mode.casefold() for mode in modes}
+    try:
+        from PIL import Image
+    except ImportError as exc:
+        raise TextureError("large texture tiling requires Pillow") from exc
+    with Image.open(source_path) as opened:
+        if tuple(opened.size) != (source_width, source_height):
+            raise TextureError(
+                f"large texture source is {opened.size}, expected {(source_width, source_height)}: {source_path.name}"
+            )
+        top = source_height - (tile_y + 1) * tile_size
+        image = opened.convert("RGBA").crop((tile_x * tile_size, top, (tile_x + 1) * tile_size, top + tile_size))
+    source_rgba = _quantize_pillow_image(image, destination_path, masked=masked, alpha_threshold=alpha_threshold)
+    facts = validate_indexed_bmp(
+        destination_path, width=tile_size, height=tile_size, modes=modes,
+        require_masked_pixels=masked and require_masked_pixels,
+    )
+    facts["conversion"] = {
+        "method": "pillow_mediancut_file_tile", "input_color_space": "file_encoded_srgb",
+        "source_row_origin": "top-left", "source": str(source_path),
+        "tile": [tile_x, tile_y],
+        "fidelity": _texture_fidelity(source_rgba, destination_path, masked=masked, alpha_threshold=alpha_threshold),
+    }
+    return facts
+
+
+def convert_rgba_tile_to_indexed_bmp(
+    rgba: Iterable[float],
+    destination: Path | str,
+    *,
+    source_width: int,
+    source_height: int,
+    tile_x: int,
+    tile_y: int,
+    tile_size: int = 512,
+    modes: list[str] | tuple[str, ...] = (),
+    alpha_threshold: int = 128,
+    input_color_space: str = "linear",
+    require_masked_pixels: bool = True,
+) -> dict:
+    """Crop one bottom-origin Blender RGBA buffer and encode an indexed tile."""
+
+    _validate_tile_dimensions(tile_size, tile_size)
+    values = list(rgba)
+    expected = source_width * source_height * 4
+    if len(values) != expected:
+        raise TextureError(f"large texture RGBA buffer has {len(values)} channels, expected {expected}")
+    count_x, count_y = source_width // tile_size, source_height // tile_size
+    if not source_width % tile_size and not source_height % tile_size and 0 <= tile_x < count_x and 0 <= tile_y < count_y:
+        tile_values = []
+        for row in range(tile_size):
+            source_row = (tile_y * tile_size + row) * source_width + tile_x * tile_size
+            tile_values.extend(values[source_row * 4 : (source_row + tile_size) * 4])
+    else:
+        raise TextureError("large texture source dimensions must divide evenly into tile_size")
+    facts = convert_rgba_to_indexed_bmp(
+        tile_values, destination, width=tile_size, height=tile_size, modes=modes,
+        alpha_threshold=alpha_threshold, input_color_space=input_color_space,
+        row_origin="bottom-left", require_masked_pixels=require_masked_pixels,
+    )
+    facts["conversion"]["tile"] = [tile_x, tile_y]
+    facts["conversion"]["source_dimensions"] = [source_width, source_height]
+    return facts
