@@ -91,22 +91,20 @@ def inspect_scene(contract: dict[str, Any], *, bpy_module=None) -> dict[str, Any
     for obj in meshes:
         evaluated_vertices, evaluated_polygons, evaluated_triangles = _evaluated_mesh_counts(obj, bpy)
         if evaluated_vertices > GOLDSRC_MAX_MODEL_VERTICES:
-            severity = "error" if contract["target_profile"] == "half-life-cs" else "warning"
             issues.append(_issue(
                 "mesh.vertex_budget",
-                f"{obj.name} evaluates to {evaluated_vertices} vertices; legacy GoldSrc allows {GOLDSRC_MAX_MODEL_VERTICES} per model",
-                severity=severity,
+                f"{obj.name} evaluates to {evaluated_vertices} vertices; the bundled GoldSrc compiler allows {GOLDSRC_MAX_MODEL_VERTICES} per submodel",
+                severity="error",
                 object=obj.name,
                 evaluated_vertices=evaluated_vertices,
                 limit=GOLDSRC_MAX_MODEL_VERTICES,
                 target_profile=contract["target_profile"],
             ))
         if evaluated_triangles > GOLDSRC_MAX_MODEL_TRIANGLES:
-            severity = "error" if contract["target_profile"] == "half-life-cs" else "warning"
             issues.append(_issue(
                 "mesh.triangle_budget",
-                f"{obj.name} evaluates to {evaluated_triangles} triangles; legacy GoldSrc allows {GOLDSRC_MAX_MODEL_TRIANGLES} per model",
-                severity=severity,
+                f"{obj.name} evaluates to {evaluated_triangles} triangles; the bundled GoldSrc compiler allows {GOLDSRC_MAX_MODEL_TRIANGLES} per submodel",
+                severity="error",
                 object=obj.name,
                 evaluated_polygons=evaluated_polygons,
                 evaluated_triangles=evaluated_triangles,

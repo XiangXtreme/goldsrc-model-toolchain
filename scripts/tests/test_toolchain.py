@@ -20,7 +20,14 @@ sys.path.insert(0, str(SCRIPT_DIR))
 from goldsrc_toolchain.mdl_v10 import _decode_animation_value, inspect_mdl, validate_mdl_contract
 from goldsrc_toolchain.model_contract import ContractError, effective_texture_modes, render_qc, validate_contract
 from goldsrc_toolchain.paths import ensure_outside_skill_tree, resolve_artifact_root
-from goldsrc_toolchain.smd import SmdError, compiled_model_vertex_count, parse_smd, validate_smd
+from goldsrc_toolchain.smd import (
+    SmdError,
+    compiled_model_normal_count,
+    compiled_model_vertex_count,
+    geometry_budget,
+    parse_smd,
+    validate_smd,
+)
 from goldsrc_toolchain.textures import (
     TextureError,
     _convert_with_blender_image,
@@ -369,7 +376,7 @@ class ContractTests(unittest.TestCase):
             normalized = validate_contract(base_contract(), artifact_dir=root, require_files=True)
             self.assertEqual(normalized["model_name"], "unit_model.mdl")
 
-    def test_compiled_vertex_limit_depends_on_target_profile(self) -> None:
+    def test_compiled_vertex_limit_is_hard_for_every_bundled_profile(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             lines = [
@@ -386,12 +393,12 @@ class ContractTests(unittest.TestCase):
             source = root / "source.png"
             Image.new("RGBA", (64, 64), (100, 120, 140, 255)).save(source)
             convert_to_indexed_bmp(source, root / "base.bmp", width=64, height=64)
-            with self.assertRaisesRegex(ContractError, "compiled vertex budget exceeded"):
-                validate_contract(base_contract(), artifact_dir=root, require_files=True)
-            sven_contract = base_contract()
-            sven_contract["target_profile"] = "sven-coop"
-            normalized = validate_contract(sven_contract, artifact_dir=root, require_files=True)
-            self.assertEqual(normalized["target_profile"], "sven-coop")
+            for profile in ("half-life-cs", "sven-coop"):
+                contract = base_contract()
+                contract["target_profile"] = profile
+                with self.subTest(profile=profile):
+                    with self.assertRaisesRegex(ContractError, "compiled vertex budget exceeded"):
+                        validate_contract(contract, artifact_dir=root, require_files=True)
 
 
 class SmdTests(unittest.TestCase):
@@ -429,6 +436,25 @@ base.bmp
 end
 """)
         self.assertEqual(compiled_model_vertex_count(document), 4)
+
+    def test_compiled_normal_budget_is_independent_and_hard_for_all_profiles(self) -> None:
+        lines = [
+            "version 1", "nodes", '0 "root" -1', "end", "skeleton", "time 0",
+            "0 0 0 0 0 0 0", "end", "triangles",
+        ]
+        for offset in range(0, 2049, 3):
+            lines.append("base.bmp")
+            for normal_index in range(offset, offset + 3):
+                lines.append(f"0 0 0 0 {normal_index} 1 1 0 0")
+        lines.append("end")
+        document = parse_smd("\n".join(lines) + "\n")
+        self.assertEqual(compiled_model_vertex_count(document), 1)
+        self.assertGreater(compiled_model_normal_count(document), 2048)
+        for profile in ("half-life-cs", "sven-coop"):
+            with self.subTest(profile=profile):
+                budget = geometry_budget(document, target_profile=profile)
+                self.assertTrue(budget["hard_failure"])
+                self.assertGreater(budget["compiled_normals"], budget["normal_limit"])
     def test_material_extension_is_rejected_by_validator(self) -> None:
         document = parse_smd(REFERENCE_SMD.replace("base.bmp", "base.png"))
         self.assertTrue(any("not a BMP" in item for item in validate_smd(document, require_triangles=True)))

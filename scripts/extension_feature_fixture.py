@@ -193,6 +193,19 @@ def _run_features(root: Path) -> dict:
             raise RuntimeError(f"feature {stage} failed: {result} {report}")
         reports[stage] = report
     inspection = reports["INSPECT"]["inspections"]["sven"]
+    api = bpy.app.driver_namespace["goldsrc_model_toolchain"]
+    decompile = api.decompile_mdl(
+        root / "extension_features.mdl", root / "decompiled",
+    )
+    if decompile["counts"]["textures"] != len(_contract()["textures"]):
+        raise RuntimeError(f"decompile texture count diverged: {decompile}")
+    try:
+        api.decompile_mdl(root / "extension_features.mdl", root / "decompiled")
+    except Exception as exc:
+        if getattr(exc, "code", None) != "decompile.output_not_empty":
+            raise
+    else:
+        raise RuntimeError("decompile unexpectedly accepted a non-empty output directory")
     return {
         "status": "pass",
         "bodyparts": [item["name"] for item in inspection["bodyparts"]],
@@ -201,6 +214,9 @@ def _run_features(root: Path) -> dict:
         "controllers": len(inspection["controllers"]),
         "attachments": len(inspection["attachments"]),
         "actions": reports["ROUNDTRIP"]["facts"]["actions"],
+        "action_matrix_audits": reports["ROUNDTRIP"]["facts"]["action_matrix_audits"],
+        "weighted_vertex_audit": reports["ROUNDTRIP"]["facts"]["weighted_vertex_audit"],
+        "decompile": decompile,
     }
 
 
@@ -256,10 +272,57 @@ def _rigidbody(root: Path) -> dict:
     return report
 
 
+def _animation_binding(root: Path) -> dict:
+    root.mkdir(parents=True, exist_ok=True)
+    _reset()
+    nodes = '''version 1
+nodes
+0 "root" -1
+1 "mid" 0
+2 "tip" 1
+end
+skeleton
+'''
+    reference = root / "reference.smd"
+    reference.write_text(nodes + '''time 0
+0 0.2 -0.1 0.3 0.2 -0.3 0.4
+1 0.1 0.9 0.2 -0.2 0.5 0.1
+2 0.4 0.2 0.7 0.6 -0.1 -0.3
+end
+''', encoding="utf-8")
+    animation = root / "motion.smd"
+    animation.write_text(nodes + '''time 0
+0 0.5 0.2 -0.1 -0.1 0.4 0.2
+1 0.2 0.7 0.5 0.3 -0.2 0.6
+2 -0.1 0.6 0.4 -0.4 0.5 0.1
+time 5
+0 -0.3 0.4 0.6 0.5 0.1 -0.4
+1 0.7 0.1 0.3 -0.6 0.2 0.5
+2 0.2 0.8 -0.2 0.1 -0.5 0.7
+end
+''', encoding="utf-8")
+    api = bpy.app.driver_namespace["goldsrc_model_toolchain"]
+    try:
+        api.import_smd(animation)
+    except Exception as exc:
+        if getattr(exc, "code", None) != "smd.animation_reference_required":
+            raise
+    else:
+        raise RuntimeError("animation-only SMD unexpectedly imported without an explicit rest source")
+    result = api.import_smd_animation(
+        animation, reference_smd=reference, action_name="non_axis_motion",
+    )
+    audit = result["matrix_audit"]
+    if audit["status"] != "pass" or audit["max_position_error"] > audit["position_tolerance"]:
+        raise RuntimeError(f"rest-space Action conversion diverged: {result}")
+    return result
+
+
 def main() -> dict:
     root = Path(os.environ["GOLDSRC_EXTENSION_FEATURE_FIXTURE"]).expanduser().resolve()
     summary = {
         "status": "pass",
+        "animation_binding": _animation_binding(root / "animation_binding"),
         "features": _run_features(root / "features"),
         "rigidbody": _rigidbody(root / "physics"),
     }

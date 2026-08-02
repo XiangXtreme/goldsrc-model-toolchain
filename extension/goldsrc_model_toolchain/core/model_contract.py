@@ -539,6 +539,11 @@ def validate_contract(
                         f"{label} GoldSrc compiled vertex budget exceeded: "
                         f"{budget['compiled_vertices']} > {budget['vertex_limit']}"
                     )
+                if budget["compiled_normals"] > budget["normal_limit"]:
+                    errors.append(
+                        f"{label} GoldSrc compiled normal budget exceeded: "
+                        f"{budget['compiled_normals']} > {budget['normal_limit']}"
+                    )
                 if budget["triangles"] > budget["triangle_limit"]:
                     errors.append(
                         f"{label} GoldSrc triangle budget exceeded: "

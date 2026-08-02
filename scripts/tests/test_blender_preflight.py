@@ -70,11 +70,8 @@ def fake_scene(*, frame_current=0, action_bound=True):
 
 
 class BlenderPreflightTests(unittest.TestCase):
-    def test_half_life_vertex_overflow_is_error_but_sven_is_warning(self) -> None:
-        for profile, expected_status, expected_severity in (
-            ("half-life-cs", "fail", "error"),
-            ("sven-coop", "pass", "warning"),
-        ):
+    def test_vertex_overflow_is_an_error_for_every_bundled_profile(self) -> None:
+        for profile in ("half-life-cs", "sven-coop"):
             with self.subTest(profile=profile):
                 contract = copy.deepcopy(base_contract())
                 contract["target_profile"] = profile
@@ -84,8 +81,8 @@ class BlenderPreflightTests(unittest.TestCase):
                 ):
                     report = inspect_scene(contract, bpy_module=fake_scene())
                 budget = next(item for item in report["issues"] if item["code"] == "mesh.vertex_budget")
-                self.assertEqual(report["status"], expected_status)
-                self.assertEqual(budget["severity"], expected_severity)
+                self.assertEqual(report["status"], "fail")
+                self.assertEqual(budget["severity"], "error")
 
     def test_playback_requires_bound_action_and_start_frame(self) -> None:
         report = inspect_scene(base_contract(), bpy_module=fake_scene(frame_current=12, action_bound=False))

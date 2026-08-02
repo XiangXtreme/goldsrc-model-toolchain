@@ -135,28 +135,71 @@ class Bone:
 
 
 @dataclass(slots=True)
+class SequenceEvent:
+    frame: int
+    event: int
+    event_type: int
+    options: str
+
+
+@dataclass(slots=True)
 class Sequence:
     entry_offset: int
     name: str
     fps: float
     flags: int
+    activity: int
+    activity_weight: int
+    events: list[SequenceEvent]
     frame_count: int
+    motion_type: int
+    motion_bone: int
+    linear_movement: tuple[float, float, float]
+    bbox_min: tuple[float, float, float]
+    bbox_max: tuple[float, float, float]
     blend_count: int
     animation_offset: int
+    blend_type: tuple[int, int]
+    blend_start: tuple[float, float]
+    blend_end: tuple[float, float]
+    blend_parent: int
     sequence_group: int
+    entry_node: int
+    exit_node: int
+    node_flags: int
+    next_sequence: int
 
     @classmethod
     def read(cls, buffer: Buffer) -> "Sequence":
         entry_offset = buffer.tell()
         name = buffer.text(32)
         fps = buffer.unpack("f")
-        flags, _activity, _weight, _event_count, _event_offset = buffer.unpack("5i")
-        frame_count, _pivot_count, _pivot_offset, _motion_type, _motion_bone = buffer.unpack("5i")
-        buffer.read(12 + 8 + 12 + 12)
+        flags, activity, weight, event_count, event_offset = buffer.unpack("5i")
+        frame_count, _pivot_count, _pivot_offset, motion_type, motion_bone = buffer.unpack("5i")
+        linear_movement = buffer.unpack("3f")
+        buffer.read(8)
+        bbox_min = buffer.unpack("3f")
+        bbox_max = buffer.unpack("3f")
         blend_count, animation_offset = buffer.unpack("2i")
-        buffer.read(8 + 8 + 8)
-        _blend_parent, sequence_group, _entry, _exit, _node_flags, _next = buffer.unpack("6i")
-        return cls(entry_offset, name, fps, flags, frame_count, blend_count, animation_offset, sequence_group)
+        blend_type = buffer.unpack("2i")
+        blend_start = buffer.unpack("2f")
+        blend_end = buffer.unpack("2f")
+        blend_parent, sequence_group, entry, exit_node, node_flags, next_sequence = buffer.unpack("6i")
+        events = []
+        if event_count:
+            with buffer.at(event_offset):
+                events = [
+                    SequenceEvent(
+                        buffer.unpack("i"), buffer.unpack("i"), buffer.unpack("i"), buffer.text(64),
+                    )
+                    for _index in range(event_count)
+                ]
+        return cls(
+            entry_offset, name, fps, flags, activity, weight, events, frame_count,
+            motion_type, motion_bone, linear_movement, bbox_min, bbox_max,
+            blend_count, animation_offset, blend_type, blend_start, blend_end,
+            blend_parent, sequence_group, entry, exit_node, node_flags, next_sequence,
+        )
 
     @staticmethod
     def _channel(
@@ -248,6 +291,7 @@ class Mesh:
 class Model:
     name: str
     bone_vertices: np.ndarray
+    bone_normals: np.ndarray
     meshes: list[Mesh]
     vertices: np.ndarray
     normals: np.ndarray
@@ -257,7 +301,7 @@ class Model:
         name = buffer.text(64)
         (
             _model_type, _radius, mesh_count, mesh_offset, vertex_count,
-            vertex_bone_offset, vertex_offset, normal_count, _normal_bone_offset,
+            vertex_bone_offset, vertex_offset, normal_count, normal_bone_offset,
             normal_offset, _group_count, _group_offset,
         ) = buffer.unpack("if10i")
         with buffer.saved():
@@ -267,9 +311,11 @@ class Model:
             bone_vertices = np.frombuffer(buffer.read(vertex_count), dtype=np.uint8).copy()
             buffer.seek(vertex_offset)
             vertices = np.frombuffer(buffer.read(vertex_count * 12), dtype="<f4").reshape((-1, 3)).copy()
+            buffer.seek(normal_bone_offset)
+            bone_normals = np.frombuffer(buffer.read(normal_count), dtype=np.uint8).copy()
             buffer.seek(normal_offset)
             normals = np.frombuffer(buffer.read(normal_count * 12), dtype="<f4").reshape((-1, 3)).copy()
-        return cls(name, bone_vertices, meshes, vertices, normals)
+        return cls(name, bone_vertices, bone_normals, meshes, vertices, normals)
 
 
 @dataclass(slots=True)
@@ -293,6 +339,8 @@ class Texture:
     flags: int
     width: int
     height: int
+    indices: np.ndarray
+    palette: np.ndarray
     pixels: np.ndarray
 
     @classmethod
@@ -302,14 +350,18 @@ class Texture:
         if not width or not height or width > 4096 or height > 4096:
             raise ValueError(f"invalid embedded texture dimensions for {name}: {width}x{height}")
         with buffer.at(offset):
-            indices = np.frombuffer(buffer.read(width * height), dtype=np.uint8)
-            palette = np.frombuffer(buffer.read(256 * 3), dtype=np.uint8).reshape((-1, 3))
+            indices = np.frombuffer(buffer.read(width * height), dtype=np.uint8).copy()
+            palette = np.frombuffer(buffer.read(256 * 3), dtype=np.uint8).reshape((-1, 3)).copy()
             rgba_palette = np.concatenate((palette, np.full((256, 1), 255, dtype=np.uint8)), axis=1)
             rgba = rgba_palette[indices].reshape((height, width, 4))
             if "{" in name:
                 rgba[indices.reshape((height, width)) == 255, 3] = 0
             rgba = np.flip(rgba, axis=0).copy()
-        return cls(name, flags, width, height, rgba.astype(np.float32) / 255.0)
+        return cls(
+            name, flags, width, height,
+            indices.reshape((height, width)), palette,
+            rgba.astype(np.float32) / 255.0,
+        )
 
 
 @dataclass(slots=True)

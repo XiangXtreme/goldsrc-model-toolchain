@@ -13,6 +13,7 @@ class SmdError(ValueError):
 
 
 GOLDSRC_MAX_MODEL_VERTICES = 2048
+GOLDSRC_MAX_MODEL_NORMALS = 2048
 GOLDSRC_MAX_MODEL_TRIANGLES = 20000
 
 
@@ -82,20 +83,37 @@ def compiled_model_vertex_count(document: SmdDocument) -> int:
     })
 
 
+def compiled_model_normal_count(document: SmdDocument) -> int:
+    """Count the normal/bone entries StudioMDL stores per compiled submodel."""
+
+    return len({
+        (vertex.bone, *vertex.normal)
+        for triangle in document.triangles
+        for vertex in triangle.vertices
+    })
+
+
 def geometry_budget(document: SmdDocument, *, target_profile: str) -> dict:
     vertices = compiled_model_vertex_count(document)
+    normals = compiled_model_normal_count(document)
     triangles = len(document.triangles)
     legacy_compatible = (
         vertices <= GOLDSRC_MAX_MODEL_VERTICES
+        and normals <= GOLDSRC_MAX_MODEL_NORMALS
         and triangles <= GOLDSRC_MAX_MODEL_TRIANGLES
     )
     return {
+        "target_profile": target_profile,
         "compiled_vertices": vertices,
+        "compiled_normals": normals,
         "triangles": triangles,
         "vertex_limit": GOLDSRC_MAX_MODEL_VERTICES,
+        "normal_limit": GOLDSRC_MAX_MODEL_NORMALS,
         "triangle_limit": GOLDSRC_MAX_MODEL_TRIANGLES,
         "legacy_compatible": legacy_compatible,
-        "hard_failure": target_profile == "half-life-cs" and not legacy_compatible,
+        # The bundled compiler stores vertices and normals in the same fixed
+        # GoldSrc mstudiomodel_t arrays for both supported profiles.
+        "hard_failure": not legacy_compatible,
     }
 
 

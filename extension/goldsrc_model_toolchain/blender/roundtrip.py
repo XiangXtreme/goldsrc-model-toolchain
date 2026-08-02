@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import bpy
 from mathutils import Vector
@@ -12,6 +13,7 @@ from mathutils import Vector
 from ..core.action_curves import representative_frame_samples
 from ..core.errors import ToolchainError
 from ..core.model_contract import load_contract
+from .action_import import local_pose_globals
 from .mdl_import import import_mdl
 
 
@@ -115,6 +117,100 @@ def _requirements(contract: dict, evidence: dict) -> list[dict]:
     ]
 
 
+def _audit_weighted_vertices(imported, *, tolerance: float = 0.001) -> dict:
+    """Compare every evaluated single-weight vertex with decoded MDL animation."""
+
+    mdl = imported["mdl"]
+    armature = imported["armature"]
+    bones = [
+        SimpleNamespace(index=index, name=bone.name, parent=bone.parent)
+        for index, bone in enumerate(mdl.bones)
+    ]
+    models = {
+        (bodypart_index, model_index): model
+        for bodypart_index, bodypart in enumerate(mdl.bodyparts)
+        for model_index, model in enumerate(bodypart.models)
+    }
+    action_sources = {}
+    for sequence, blends in zip(mdl.sequences, mdl.animations):
+        for blend_index, frames in enumerate(blends):
+            name = sequence.name if len(blends) == 1 else f"{sequence.name}_blend{blend_index}"
+            action_sources[name] = {index: poses for index, poses in enumerate(frames)}
+    maximum_error = 0.0
+    checked_vertices = 0
+    checked_samples = 0
+    worst = None
+    dependency_graph = bpy.context.evaluated_depsgraph_get()
+    for action in imported["actions"]:
+        frames = action_sources.get(action.name)
+        if not frames:
+            continue
+        _bind_action(armature, action)
+        source_frames = sorted(frames)
+        requested = representative_frame_samples((source_frames[0], source_frames[-1]), maximum=5)
+        samples = sorted({min(source_frames, key=lambda value: abs(value - item)) for item in requested})
+        for frame in samples:
+            bpy.context.scene.frame_set(int(frame))
+            bpy.context.view_layer.update()
+            pose_globals = local_pose_globals(bones, frames[frame], 1.0)
+            for obj in imported["objects"]:
+                model = models.get((
+                    int(obj.get("goldsrc_bodypart_index", -1)),
+                    int(obj.get("goldsrc_bodygroup_choice", -1)),
+                ))
+                if model is None or not len(model.vertices):
+                    continue
+                evaluated = obj.evaluated_get(dependency_graph)
+                mesh = evaluated.to_mesh()
+                try:
+                    source_attribute = mesh.attributes.get("goldsrc_source_vertex")
+                    if source_attribute is None:
+                        raise ToolchainError(
+                            "ROUNDTRIP", "roundtrip.vertex_mapping",
+                            "Evaluated readback mesh lost its source-vertex mapping",
+                            {"object": obj.name},
+                        )
+                    referenced = {
+                        item.vertex
+                        for model_mesh in model.meshes
+                        for command, _fan in model_mesh.commands
+                        for item in command
+                    }
+                    mapped = [item.value for item in source_attribute.data]
+                    for evaluated_index, vertex_index in enumerate(mapped):
+                        if vertex_index not in referenced:
+                            continue
+                        source = model.vertices[vertex_index]
+                        bone_index = model.bone_vertices[vertex_index]
+                        expected = armature.matrix_world @ (pose_globals[int(bone_index)] @ Vector(source))
+                        actual = evaluated.matrix_world @ mesh.vertices[evaluated_index].co
+                        error = (actual - expected).length
+                        checked_vertices += 1
+                        if error > maximum_error:
+                            maximum_error = error
+                            worst = {
+                                "action": action.name, "frame": frame,
+                                "object": obj.name, "vertex": vertex_index,
+                            }
+                finally:
+                    evaluated.to_mesh_clear()
+            checked_samples += 1
+    report = {
+        "status": "pass" if maximum_error <= tolerance else "fail",
+        "max_position_error": maximum_error,
+        "position_tolerance": tolerance,
+        "checked_vertices": checked_vertices,
+        "checked_samples": checked_samples,
+        "worst": worst,
+    }
+    if report["status"] != "pass":
+        raise ToolchainError(
+            "ROUNDTRIP", "roundtrip.weighted_vertex_error",
+            "Evaluated weighted vertices diverge from decoded MDL animation", report,
+        )
+    return report
+
+
 def run_roundtrip(contract_path: str | Path, artifacts_dir: str | Path) -> dict:
     root = Path(artifacts_dir).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -199,6 +295,7 @@ def run_roundtrip(contract_path: str | Path, artifacts_dir: str | Path) -> dict:
     suffixed = [name for name in [obj.name for obj in imported["objects"]] + [action.name for action in imported["actions"]] if name.endswith(".001")]
     if suffixed:
         raise ToolchainError("ROUNDTRIP", "roundtrip.suffix", "Readback created numeric-suffix collisions", {"names": suffixed})
+    weighted_vertex_audit = _audit_weighted_vertices(imported)
     bounds = _configure_render(imported["objects"])
     previews = []
     for action in imported["actions"]:
@@ -235,6 +332,8 @@ def run_roundtrip(contract_path: str | Path, artifacts_dir: str | Path) -> dict:
         "actions": [action.name for action in imported["actions"]],
         "bodygroups": imported["bodygroups"],
         "skin_family_count": len(imported["skin_families"]),
+        "action_matrix_audits": imported["action_matrix_audits"],
+        "weighted_vertex_audit": weighted_vertex_audit,
         "preview_hashes": [preview["sha256"] for preview in previews],
         "playback": {
             "action": first_action.name if first_action else None,

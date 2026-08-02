@@ -7,9 +7,10 @@ from uuid import uuid4
 import hashlib
 
 from .blender.mdl_import import import_mdl as _import_mdl
-from .blender.smd_import import import_smd as _import_smd
+from .blender.smd_import import import_smd as _import_smd, import_smd_animation as _import_smd_animation
 from .core.blender_namespace import assert_exact_asset_namespace, purge_asset_namespace
 from .core.compatibility import validate_model_compatibility, validate_player_portrait
+from .core.decompile import decompile_mdl
 from .core.errors import ToolchainError
 from .core.mdl_v10 import inspect_mdl
 from .core.model_contract import load_contract
@@ -49,13 +50,13 @@ class RuntimeAPI:
         compiler = Path(__file__).resolve().parent / "bin" / "windows-x64" / "studiomdl.exe"
         return {
             "id": "goldsrc_model_toolchain",
-            "version": "1.2.0",
+            "version": "1.3.0",
             "api_version": 1,
             "blender": "5.2.x",
             "platform": "windows-x64",
             "distribution": "public_github_release",
             "repository": "https://github.com/XiangXtreme/goldsrc-model-toolchain",
-            "release": "v1.2.0",
+            "release": "v1.3.0",
             "stages": list(PUBLIC_STAGES),
             "formats": {"smd": 1, "mdl": 10, "qc": True, "indexed_bmp": True},
             "roundtrip_parser": "SourceIO 5.5.4 derived GoldSrc-only reader",
@@ -76,6 +77,14 @@ class RuntimeAPI:
                 "profile_texture_rules": True,
                 "texrendermode_ordering": True,
                 "multi_source_sequence_authoring": False,
+                "smd_animation_binding": True,
+                "mdl_decompile": True,
+                "roundtrip_matrix_audit": True,
+                "profile_model_budgets": {
+                    "compiled_vertices": 2048,
+                    "compiled_normals": 2048,
+                    "triangles": 20000,
+                },
             },
             "rigidbody_capture": "opaque_handle_with_json_matrix_access",
             "artifact_policy": "outside_any_skill_tree",
@@ -87,6 +96,16 @@ class RuntimeAPI:
 
     def import_smd(self, path, *, scale=1.0, action_name=None) -> dict:
         return _guard("IMPORT", "smd.import", _import_smd, path, scale=float(scale), action_name=action_name)
+
+    def import_smd_animation(
+        self, animation_smd, *, reference_smd=None, target_armature=None,
+        scale=1.0, action_name=None,
+    ) -> dict:
+        return _guard(
+            "IMPORT", "smd.animation_import", _import_smd_animation,
+            animation_smd, reference_smd=reference_smd, target_armature=target_armature,
+            scale=float(scale), action_name=action_name,
+        )
 
     def import_mdl(self, path, *, scale=1.0, reset_scene=False) -> dict:
         result = _guard(
@@ -102,6 +121,7 @@ class RuntimeAPI:
             "bodygroups": result["bodygroups"],
             "skin_families": result["skin_families"],
             "external_sequence_groups": result["external_sequence_groups"],
+            "action_matrix_audits": result["action_matrix_audits"],
         }
 
     def convert_texture(self, source, destination, *, width, height, modes=(), alpha_threshold=128) -> dict:
@@ -120,6 +140,16 @@ class RuntimeAPI:
 
     def inspect_mdl(self, path) -> dict:
         return _guard("INSPECT", "mdl.inspect", inspect_mdl, Path(path))
+
+    def decompile_mdl(self, mdl_path, artifacts_dir) -> dict:
+        artifacts_dir = _guard(
+            "DECOMPILE", "artifacts.skill_root", ensure_outside_skill_tree,
+            artifacts_dir, label="Decompile artifact directory",
+        )
+        return _guard(
+            "DECOMPILE", "mdl.decompile", decompile_mdl,
+            mdl_path, artifacts_dir,
+        )
 
     def validate_model_compatibility(self, candidate_mdl, baseline_mdl, role) -> dict:
         return _guard(
