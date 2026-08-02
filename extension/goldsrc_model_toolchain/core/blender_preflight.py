@@ -46,6 +46,60 @@ def _evaluated_mesh_counts(obj: Any, bpy: Any) -> tuple[int, int, int]:
         evaluated.to_mesh_clear()
 
 
+def _evaluated_surface_facts(obj: Any, bpy: Any) -> dict[str, Any]:
+    """Inspect the UV/material data that EXPORT will read after modifiers."""
+
+    facts: dict[str, Any] = {
+        "available": False,
+        "active_uv": None,
+        "uv_loop_count": 0,
+        "uv_bounds": None,
+        "uv_nonfinite": 0,
+        "material_slots": [],
+    }
+    try:
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+        evaluated = obj.evaluated_get(depsgraph)
+        mesh = evaluated.to_mesh(preserve_all_data_layers=True, depsgraph=depsgraph)
+    except (AttributeError, RuntimeError, TypeError):
+        return facts
+    try:
+        facts["available"] = True
+        uv_layers = getattr(mesh, "uv_layers", None)
+        active = getattr(uv_layers, "active", None)
+        if active is not None:
+            facts["active_uv"] = getattr(active, "name", None)
+            data = getattr(active, "data", ())
+            facts["uv_loop_count"] = len(data)
+            coordinates = []
+            nonfinite = 0
+            for item in data:
+                value = getattr(item, "uv", None)
+                try:
+                    x = float(value.x)
+                    y = float(value.y)
+                except (AttributeError, TypeError, ValueError):
+                    nonfinite += 1
+                    continue
+                if not (math.isfinite(x) and math.isfinite(y)):
+                    nonfinite += 1
+                    continue
+                coordinates.append((x, y))
+            facts["uv_nonfinite"] = nonfinite
+            if coordinates:
+                facts["uv_bounds"] = {
+                    "min": [min(value[0] for value in coordinates), min(value[1] for value in coordinates)],
+                    "max": [max(value[0] for value in coordinates), max(value[1] for value in coordinates)],
+                }
+        materials = getattr(mesh, "materials", ())
+        facts["material_slots"] = [
+            getattr(material, "name", None) for material in materials if material is not None
+        ]
+    finally:
+        evaluated.to_mesh_clear()
+    return facts
+
+
 def _bounds_facts(obj: Any) -> dict[str, Any]:
     dimensions = getattr(obj, "dimensions", None)
     corners = getattr(obj, "bound_box", None)
@@ -119,6 +173,7 @@ def inspect_scene(contract: dict[str, Any], *, bpy_module=None) -> dict[str, Any
     mesh_facts = []
     for obj in meshes:
         evaluated_vertices, evaluated_polygons, evaluated_triangles = _evaluated_mesh_counts(obj, bpy)
+        evaluated_surface = _evaluated_surface_facts(obj, bpy)
         if evaluated_vertices > GOLDSRC_MAX_MODEL_VERTICES:
             issues.append(_issue(
                 "mesh.vertex_budget",
@@ -149,6 +204,31 @@ def inspect_scene(contract: dict[str, Any], *, bpy_module=None) -> dict[str, Any
             issues.append(_issue("mesh.non_triangles", f"{obj.name} contains {non_triangles} non-triangle polygons", object=obj.name, count=non_triangles))
         if not obj.data.uv_layers or obj.data.uv_layers.active is None:
             issues.append(_issue("mesh.uv_missing", f"{obj.name} has no active UV layer", object=obj.name))
+        if evaluated_surface["available"]:
+            if evaluated_surface["active_uv"] is None:
+                issues.append(_issue(
+                    "mesh.evaluated_uv_missing",
+                    f"{obj.name} has no active UV layer after modifier evaluation",
+                    object=obj.name,
+                ))
+            if evaluated_surface["uv_nonfinite"]:
+                issues.append(_issue(
+                    "mesh.evaluated_uv_nonfinite",
+                    f"{obj.name} has non-finite evaluated UV coordinates",
+                    object=obj.name,
+                    count=evaluated_surface["uv_nonfinite"],
+                ))
+            raw_active = getattr(getattr(obj.data, "uv_layers", None), "active", None)
+            raw_name = getattr(raw_active, "name", None)
+            if raw_name and evaluated_surface["active_uv"] and raw_name != evaluated_surface["active_uv"]:
+                issues.append(_issue(
+                    "mesh.evaluated_uv_changed",
+                    f"{obj.name} active UV differs after modifier evaluation",
+                    severity="warning",
+                    object=obj.name,
+                    source_uv=raw_name,
+                    evaluated_uv=evaluated_surface["active_uv"],
+                ))
         materials = [slot.material.name for slot in obj.material_slots if slot.material]
         if not materials:
             issues.append(_issue("mesh.material_missing", f"{obj.name} has no material", object=obj.name))
@@ -195,6 +275,7 @@ def inspect_scene(contract: dict[str, Any], *, bpy_module=None) -> dict[str, Any
             "materials": materials,
             "unweighted": unweighted,
             "multiweighted": multiweighted,
+            "evaluated_surface": evaluated_surface,
             **_bounds_facts(obj),
         })
 

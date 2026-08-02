@@ -4,7 +4,7 @@ Public Blender 5.2 Extension and deterministic host tools for creating and valid
 
 The Extension provides GoldSrc SMD/QC import and export, indexed BMP conversion, Sven StudioMDL compilation, independent MDL v10 inspection and readback, rigid-body-to-bone baking helpers, and a background-only five-stage API. It registers no panel or menu. The official [ahujasid/blender-mcp](https://github.com/ahujasid/blender-mcp) remains an external dependency and is never bundled or modified.
 
-Version `1.3.3` adds labeled `3x2` contact sheets for five-point Action readback while preserving every original still and its hash. The same Blender-independent compositor is available through the runtime API for author/readback comparisons and physics-event evidence. Multi-source blend sequence authoring remains an explicit limitation.
+Version `1.3.3` adds labeled `3x2` contact sheets for five-point Action readback while preserving every original still and its hash. The same Blender-independent compositor is available through the runtime API for author/readback comparisons and physics-event evidence. The current source also reports evaluated UV/material facts and propagates failed preflight evidence as `status: fail`. Multi-source blend sequence authoring remains an explicit limitation.
 
 ## Install
 

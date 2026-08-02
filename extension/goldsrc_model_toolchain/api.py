@@ -86,6 +86,8 @@ class RuntimeAPI:
                 "bounds_aware_roundtrip_camera": True,
                 "blank_preview_rejection": True,
                 "preflight_object_bounds": True,
+                "evaluated_uv_material_reports": True,
+                "failed_requirement_evidence": True,
                 "high_quality_texture_quantization": "Pillow MEDIANCUT",
                 "texture_fidelity_report": True,
                 "labeled_visual_contact_sheets": True,

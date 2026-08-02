@@ -12,7 +12,7 @@ SCRIPT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPT_DIR))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from goldsrc_toolchain.blender_preflight import inspect_scene
+from goldsrc_toolchain.blender_preflight import _evaluated_surface_facts, inspect_scene
 from test_toolchain import base_contract
 
 
@@ -78,6 +78,32 @@ def fake_scene(*, frame_current=0, action_bound=True):
 
 
 class BlenderPreflightTests(unittest.TestCase):
+    def test_reports_evaluated_uv_and_material_slots(self) -> None:
+        uv_data = [
+            SimpleNamespace(uv=SimpleNamespace(x=0.1, y=0.2)),
+            SimpleNamespace(uv=SimpleNamespace(x=0.9, y=0.8)),
+        ]
+        mesh = SimpleNamespace(
+            uv_layers=SimpleNamespace(active=SimpleNamespace(name="GoldSrcUV", data=uv_data)),
+            materials=[SimpleNamespace(name="terrain_base.bmp")],
+        )
+        evaluated = SimpleNamespace(
+            to_mesh=lambda **_kwargs: mesh,
+            to_mesh_clear=lambda: None,
+        )
+        obj = SimpleNamespace(evaluated_get=lambda _depsgraph: evaluated)
+        bpy = SimpleNamespace(
+            context=SimpleNamespace(evaluated_depsgraph_get=lambda: object()),
+        )
+
+        facts = _evaluated_surface_facts(obj, bpy)
+
+        self.assertTrue(facts["available"])
+        self.assertEqual(facts["active_uv"], "GoldSrcUV")
+        self.assertEqual(facts["uv_loop_count"], 2)
+        self.assertEqual(facts["uv_bounds"], {"min": [0.1, 0.2], "max": [0.9, 0.8]})
+        self.assertEqual(facts["material_slots"], ["terrain_base.bmp"])
+
     def test_vertex_overflow_is_an_error_for_every_bundled_profile(self) -> None:
         for profile in ("half-life-cs", "sven-coop"):
             with self.subTest(profile=profile):

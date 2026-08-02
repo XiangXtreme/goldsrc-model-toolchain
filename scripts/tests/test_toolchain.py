@@ -27,6 +27,7 @@ from goldsrc_toolchain.mdl_v10 import (
 )
 from goldsrc_toolchain.model_contract import ContractError, effective_texture_modes, render_qc, validate_contract
 from goldsrc_toolchain.paths import ensure_outside_skill_tree, resolve_artifact_root
+from goldsrc_toolchain.stages import _requirements
 from goldsrc_toolchain.smd import (
     SmdError,
     audit_loop_endpoint,
@@ -415,6 +416,26 @@ class ContractTests(unittest.TestCase):
                 with self.subTest(profile=profile):
                     with self.assertRaisesRegex(ContractError, "compiled vertex budget exceeded"):
                         validate_contract(contract, artifact_dir=root, require_files=True)
+
+
+class StageEvidenceTests(unittest.TestCase):
+    def test_failed_stage_marks_requirement_evidence_failed(self) -> None:
+        contract = {
+            "intent": {
+                "requirements": [{"id": "mesh", "evidence_phases": ["preflight"]}],
+            },
+        }
+
+        evidence = _requirements(
+            contract,
+            "preflight",
+            "Blender preflight resolved contract-owned scene data",
+            {"meshes": []},
+            status="fail",
+        )
+
+        self.assertEqual(evidence[0]["status"], "fail")
+        self.assertIn("did not pass", evidence[0]["summary"])
 
 
 class AnimationEvidenceTests(unittest.TestCase):

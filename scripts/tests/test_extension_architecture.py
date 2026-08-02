@@ -33,6 +33,8 @@ class ExtensionArchitectureTests(unittest.TestCase):
         self.assertIn('"loop_endpoint_validation": True', source)
         self.assertIn('"bounds_aware_roundtrip_camera": True', source)
         self.assertIn('"blank_preview_rejection": True', source)
+        self.assertIn('"evaluated_uv_material_reports": True', source)
+        self.assertIn('"failed_requirement_evidence": True', source)
         self.assertIn('"high_quality_texture_quantization": "Pillow MEDIANCUT"', source)
         self.assertIn('"texture_fidelity_report": True', source)
         self.assertIn('"labeled_visual_contact_sheets": True', source)

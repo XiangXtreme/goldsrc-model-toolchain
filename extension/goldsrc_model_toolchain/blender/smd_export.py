@@ -176,6 +176,32 @@ def _vertex_bone(obj, vertex, bone_ids: dict[str, int]) -> int:
     return weights[0][1]
 
 
+def _evaluated_uv_facts(mesh, obj) -> dict:
+    active = getattr(getattr(mesh, "uv_layers", None), "active", None)
+    if active is None:
+        raise ToolchainError("EXPORT", "export.uv", "Exported mesh has no active UV map", {"object": obj.name})
+    data = active.data
+    coordinates = []
+    for item in data:
+        uv = item.uv
+        x = float(uv.x)
+        y = float(uv.y)
+        if not (math.isfinite(x) and math.isfinite(y)):
+            raise ToolchainError(
+                "EXPORT", "export.uv_nonfinite", "Exported mesh has non-finite UV coordinates",
+                {"object": obj.name, "uv_layer": active.name},
+            )
+        coordinates.append((x, y))
+    return {
+        "layer": active.name,
+        "loop_count": len(data),
+        "bounds": {
+            "min": [min(value[0] for value in coordinates), min(value[1] for value in coordinates)],
+            "max": [max(value[0] for value in coordinates), max(value[1] for value in coordinates)],
+        } if coordinates else None,
+    }
+
+
 def _write_triangles(handle, obj, contract: dict, bone_ids: dict[str, int]) -> dict:
     depsgraph = bpy.context.evaluated_depsgraph_get()
     evaluated = obj.evaluated_get(depsgraph)
@@ -183,16 +209,15 @@ def _write_triangles(handle, obj, contract: dict, bone_ids: dict[str, int]) -> d
     if mesh is None:
         raise ToolchainError("EXPORT", "export.mesh_eval", "Could not evaluate mesh", {"object": obj.name})
     try:
-        if not mesh.uv_layers.active:
-            raise ToolchainError("EXPORT", "export.uv", "Exported mesh has no active UV map", {"object": obj.name})
+        uv_facts = _evaluated_uv_facts(mesh, obj)
         mesh.calc_loop_triangles()
         world = evaluated.matrix_world.copy()
         normal_matrix = world.to_3x3().inverted_safe().transposed()
         reverse = world.to_3x3().determinant() < 0
         uv_data = mesh.uv_layers.active.data
-        materials = []
-        for slot in obj.material_slots:
-            materials.append(slot.material)
+        materials = list(getattr(mesh, "materials", ()))
+        if not materials:
+            materials = [slot.material for slot in obj.material_slots]
         count = 0
         tokens = set()
         handle.write("triangles\n")
@@ -221,7 +246,15 @@ def _write_triangles(handle, obj, contract: dict, bone_ids: dict[str, int]) -> d
         handle.write("end\n")
         if not count:
             raise ToolchainError("EXPORT", "export.empty_mesh", "Exported object has no triangles", {"object": obj.name})
-        return {"object": obj.name, "triangles": count, "materials": sorted(tokens)}
+        return {
+            "object": obj.name,
+            "triangles": count,
+            "materials": sorted(tokens),
+            "evaluated_uv": uv_facts,
+            "evaluated_material_slots": [
+                material.name for material in materials if material is not None
+            ],
+        }
     finally:
         evaluated.to_mesh_clear()
 

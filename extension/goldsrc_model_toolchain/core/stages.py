@@ -16,9 +16,19 @@ from .smd import animation_budget_hint, audit_loop_endpoint, read_smd
 PUBLIC_STAGES = ("PREFLIGHT", "EXPORT", "COMPILE", "INSPECT", "ROUNDTRIP")
 
 
-def _requirements(contract: dict, phase: str, summary: str, evidence: dict) -> list[dict]:
+def _requirements(
+    contract: dict,
+    phase: str,
+    summary: str,
+    evidence: dict,
+    *,
+    status: str = "pass",
+) -> list[dict]:
+    evidence_status = status if status in {"pass", "fail"} else "fail"
+    if evidence_status == "fail":
+        summary = f"{summary}; stage did not pass"
     return [
-        {"id": item["id"], "status": "pass", "summary": summary, "evidence": evidence}
+        {"id": item["id"], "status": evidence_status, "summary": summary, "evidence": evidence}
         for item in contract.get("intent", {}).get("requirements", [])
         if phase in item.get("evidence_phases", [])
     ]
@@ -33,6 +43,7 @@ def run_preflight(contract_path: str | Path, artifacts_dir: str | Path) -> dict:
     evidence = report.get("facts", {})
     report["requirement_evidence"] = _requirements(
         contract, "preflight", "Blender 5.2 preflight resolved contract-owned scene data", evidence,
+        status=report.get("status", "fail"),
     )
     return report
 

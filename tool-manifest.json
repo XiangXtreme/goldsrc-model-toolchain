@@ -23,8 +23,8 @@
       "license_url": "https://spdx.org/licenses/GPL-2.0-or-later.html",
       "redistribution_status": "public GitHub release; upstream notices retained",
       "files": 38,
-      "bytes": 8201840,
-      "sha256_tree": "29a204865bd11e9774640a86057779715c01b764d36eef660209406b0f04644d"
+      "bytes": 8206890,
+      "sha256_tree": "7f8239ed6c5d1036e4cb70b64362aeebaf246a015e514b6286118ad2057fcf3c"
     }
   },
   "external_tools": {
