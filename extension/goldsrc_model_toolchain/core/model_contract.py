@@ -223,6 +223,24 @@ def _validate_intent(contract: dict[str, Any], errors: list[str]) -> None:
     _nonempty_strings(revision.get("preserve"), "intent.revision.preserve", errors)
 
 
+def _validate_texture_bake(contract: dict[str, Any], errors: list[str]) -> None:
+    spec = contract.get("texture_bake")
+    if spec is None:
+        return
+    if not isinstance(spec, dict):
+        errors.append("texture_bake must be an object")
+        return
+    unknown = sorted(set(spec) - {"uv_layer", "require_active_render"})
+    if unknown:
+        errors.append(f"unsupported texture_bake fields: {', '.join(unknown)}")
+    uv_layer = spec.get("uv_layer")
+    if not isinstance(uv_layer, str) or not uv_layer.strip():
+        errors.append("texture_bake.uv_layer must be a non-empty UV layer name")
+    require_active_render = spec.get("require_active_render", True)
+    if not isinstance(require_active_render, bool):
+        errors.append("texture_bake.require_active_render must be a boolean")
+
+
 def normalize_contract(value: dict[str, Any]) -> dict[str, Any]:
     contract = copy.deepcopy(value)
     contract.setdefault("version", CONTRACT_VERSION)
@@ -245,6 +263,9 @@ def normalize_contract(value: dict[str, Any]) -> dict[str, Any]:
     limitations = contract.setdefault("limitations", {})
     if isinstance(limitations, dict):
         limitations.setdefault("external_sequence_groups", [])
+    texture_bake = contract.get("texture_bake")
+    if isinstance(texture_bake, dict):
+        texture_bake.setdefault("require_active_render", True)
     if "physics" in contract and isinstance(contract["physics"], dict):
         contract["physics"] = normalize_physics(contract["physics"])
     return contract
@@ -289,6 +310,7 @@ def validate_contract(
             if len(names) != len(set(names)):
                 errors.append("limitations.external_sequence_groups must not contain duplicates")
     _validate_intent(contract, errors)
+    _validate_texture_bake(contract, errors)
     errors.extend(validate_physics_definition(contract.get("physics")))
 
     bones = contract["bones"]

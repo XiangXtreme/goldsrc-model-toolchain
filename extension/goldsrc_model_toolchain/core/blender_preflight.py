@@ -31,6 +31,40 @@ def _material_image_hints(material: Any) -> list[str]:
     })
 
 
+def _uv_layer_state(uv_layers: Any) -> dict[str, Any]:
+    """Return UV names and active-render state without requiring Blender RNA types."""
+
+    active = getattr(uv_layers, "active", None)
+    try:
+        layers = list(uv_layers) if uv_layers is not None else []
+    except TypeError:
+        layers = []
+    names = [getattr(layer, "name", None) for layer in layers]
+    names = [name for name in names if isinstance(name, str)]
+    active_render = next(
+        (
+            getattr(layer, "name", None)
+            for layer in layers
+            if bool(getattr(layer, "active_render", False))
+            and isinstance(getattr(layer, "name", None), str)
+        ),
+        None,
+    )
+    if active_render is None:
+        collection_active_render = getattr(uv_layers, "active_render", None)
+        if isinstance(collection_active_render, str):
+            active_render = collection_active_render
+        else:
+            candidate = getattr(collection_active_render, "name", None)
+            if isinstance(candidate, str):
+                active_render = candidate
+    return {
+        "layers": names,
+        "active_uv": getattr(active, "name", None),
+        "active_render_uv": active_render,
+    }
+
+
 def _evaluated_mesh_counts(obj: Any, bpy: Any) -> tuple[int, int, int]:
     try:
         depsgraph = bpy.context.evaluated_depsgraph_get()
@@ -51,7 +85,9 @@ def _evaluated_surface_facts(obj: Any, bpy: Any) -> dict[str, Any]:
 
     facts: dict[str, Any] = {
         "available": False,
+        "uv_layers": [],
         "active_uv": None,
+        "active_render_uv": None,
         "uv_loop_count": 0,
         "uv_bounds": None,
         "uv_nonfinite": 0,
@@ -66,6 +102,9 @@ def _evaluated_surface_facts(obj: Any, bpy: Any) -> dict[str, Any]:
     try:
         facts["available"] = True
         uv_layers = getattr(mesh, "uv_layers", None)
+        uv_state = _uv_layer_state(uv_layers)
+        facts["uv_layers"] = uv_state["layers"]
+        facts["active_render_uv"] = uv_state["active_render_uv"]
         active = getattr(uv_layers, "active", None)
         if active is not None:
             facts["active_uv"] = getattr(active, "name", None)
@@ -180,10 +219,14 @@ def inspect_scene(contract: dict[str, Any], *, bpy_module=None) -> dict[str, Any
         if isinstance(atlas, dict) and isinstance(atlas.get("name"), str)
         for value in (atlas["name"], Path(atlas["name"]).stem)
     )
+    texture_bake = contract.get("texture_bake")
+    texture_bake_uv = texture_bake.get("uv_layer") if isinstance(texture_bake, dict) else None
+    require_active_render = texture_bake.get("require_active_render", True) if isinstance(texture_bake, dict) else False
     mesh_facts = []
     for obj in meshes:
         evaluated_vertices, evaluated_polygons, evaluated_triangles = _evaluated_mesh_counts(obj, bpy)
         evaluated_surface = _evaluated_surface_facts(obj, bpy)
+        raw_uv_state = _uv_layer_state(getattr(obj.data, "uv_layers", None))
         if evaluated_vertices > GOLDSRC_MAX_MODEL_VERTICES:
             issues.append(_issue(
                 "mesh.vertex_budget",
@@ -216,6 +259,15 @@ def inspect_scene(contract: dict[str, Any], *, bpy_module=None) -> dict[str, Any
             issues.append(_issue("mesh.non_triangles", f"{obj.name} contains {non_triangles} non-triangle polygons", object=obj.name, count=non_triangles))
         if not obj.data.uv_layers or obj.data.uv_layers.active is None:
             issues.append(_issue("mesh.uv_missing", f"{obj.name} has no active UV layer", object=obj.name))
+        if raw_uv_state["active_uv"] and raw_uv_state["active_render_uv"] and raw_uv_state["active_uv"] != raw_uv_state["active_render_uv"]:
+            issues.append(_issue(
+                "mesh.active_render_uv_mismatch",
+                f"{obj.name} active UV differs from its active-render UV; baking may read a different layer",
+                severity="warning",
+                object=obj.name,
+                active_uv=raw_uv_state["active_uv"],
+                active_render_uv=raw_uv_state["active_render_uv"],
+            ))
         if evaluated_surface["available"]:
             if evaluated_surface["active_uv"] is None:
                 issues.append(_issue(
@@ -230,8 +282,16 @@ def inspect_scene(contract: dict[str, Any], *, bpy_module=None) -> dict[str, Any
                     object=obj.name,
                     count=evaluated_surface["uv_nonfinite"],
                 ))
-            raw_active = getattr(getattr(obj.data, "uv_layers", None), "active", None)
-            raw_name = getattr(raw_active, "name", None)
+            if evaluated_surface["active_uv"] and evaluated_surface["active_render_uv"] and evaluated_surface["active_uv"] != evaluated_surface["active_render_uv"]:
+                issues.append(_issue(
+                    "mesh.evaluated_active_render_uv_mismatch",
+                    f"{obj.name} evaluated active UV differs from its evaluated active-render UV",
+                    severity="warning",
+                    object=obj.name,
+                    active_uv=evaluated_surface["active_uv"],
+                    active_render_uv=evaluated_surface["active_render_uv"],
+                ))
+            raw_name = raw_uv_state["active_uv"]
             if raw_name and evaluated_surface["active_uv"] and raw_name != evaluated_surface["active_uv"]:
                 issues.append(_issue(
                     "mesh.evaluated_uv_changed",
@@ -241,6 +301,49 @@ def inspect_scene(contract: dict[str, Any], *, bpy_module=None) -> dict[str, Any
                     source_uv=raw_name,
                     evaluated_uv=evaluated_surface["active_uv"],
                 ))
+        if texture_bake_uv:
+            if not evaluated_surface["available"]:
+                issues.append(_issue(
+                    "mesh.texture_bake_surface_unavailable",
+                    f"{obj.name} texture bake contract cannot be checked without evaluated mesh data",
+                    object=obj.name,
+                    target_uv=texture_bake_uv,
+                ))
+            for source, state in (
+                ("raw", raw_uv_state),
+                ("evaluated", {
+                    "layers": evaluated_surface["uv_layers"],
+                    "active_uv": evaluated_surface["active_uv"],
+                    "active_render_uv": evaluated_surface["active_render_uv"],
+                }),
+            ):
+                if texture_bake_uv not in state["layers"]:
+                    issues.append(_issue(
+                        "mesh.texture_bake_uv_missing",
+                        f"{obj.name} texture bake UV is missing from the {source} mesh",
+                        object=obj.name,
+                        source=source,
+                        target_uv=texture_bake_uv,
+                        available_uvs=state["layers"],
+                    ))
+                if state["active_uv"] != texture_bake_uv:
+                    issues.append(_issue(
+                        "mesh.texture_bake_uv_not_active",
+                        f"{obj.name} texture bake UV is not the {source} active UV used for export",
+                        object=obj.name,
+                        source=source,
+                        target_uv=texture_bake_uv,
+                        active_uv=state["active_uv"],
+                    ))
+                if require_active_render and state["active_render_uv"] != texture_bake_uv:
+                    issues.append(_issue(
+                        "mesh.texture_bake_uv_not_active_render",
+                        f"{obj.name} texture bake UV is not the {source} active-render UV used by Blender baking",
+                        object=obj.name,
+                        source=source,
+                        target_uv=texture_bake_uv,
+                        active_render_uv=state["active_render_uv"],
+                    ))
         materials = [slot.material.name for slot in obj.material_slots if slot.material]
         if not materials:
             issues.append(_issue("mesh.material_missing", f"{obj.name} has no material", object=obj.name))
@@ -287,6 +390,11 @@ def inspect_scene(contract: dict[str, Any], *, bpy_module=None) -> dict[str, Any
             "materials": materials,
             "unweighted": unweighted,
             "multiweighted": multiweighted,
+            "raw_uv": raw_uv_state,
+            "texture_bake": {
+                "target_uv": texture_bake_uv,
+                "require_active_render": bool(require_active_render),
+            } if texture_bake_uv else None,
             "evaluated_surface": evaluated_surface,
             **_bounds_facts(obj),
         })

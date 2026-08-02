@@ -19,6 +19,7 @@ Version 2 is required for new production work. Version 1 remains readable only s
 | `bodygroups` | `{name,choices}`; every choice is exactly `{studio,object?}` or `{blank:true}` |
 | `large_textures` | Optional logical atlas records `{name,image,width,height,tile_size:512,modes}`; expanded into `512x512` texture entries |
 | `textures` | `{name,source,width,height,modes,require_masked_pixels?}`; names/sources end in `.bmp` |
+| `texture_bake` | Optional authoring assertion `{uv_layer,require_active_render?}`; when present, PREFLIGHT requires the declared UV to be both the evaluated export UV and Blender's active-render UV. It does not prove that a source bake is unlit; a strict no-shadow bake must be authored as a temporary Emission/`EMIT` bake before EXPORT |
 | `skin_families` | Texture-name rows of equal width; each slot keeps identical dimensions across rows |
 | `sequences` | `{name,source,action?,fps,frame?,loop?,activity?,events?,motion?,origin?}` |
 | `hitboxes` | `{group,bone,min,max}`; an empty list leaves hitbox generation to StudioMDL and does not require a zero-count MDL table |
@@ -89,6 +90,8 @@ Allowed texture modes are `flatshade`, `chrome`, `fullbright`, `nomips`, `alpha`
 Half-Life/Counter-Strike rejects `fullbright` and requires every effective Chrome texture to be exactly `64x64`. A filename beginning with `CHROME_` is the legacy name-set form and implies both Chrome and Flatshade; an explicit `chrome` mode is the flag-set form and needs no prefix. Sven keeps the ordinary texture bounds. A logical atlas may exceed 512 only when both dimensions are tile-aligned, each generated tile is no larger than `512x512`, and the total is at most 64 tiles. QC generation preserves declared texture/mode order except that all Masked directives are emitted after non-Masked directives, which guarantees Additive precedes Masked.
 
 The export plan is generated after Blender evaluation. It records tiled materials, generated texture facts, and the SMD parts used for compilation. Do not hand-edit the plan or use a text-only SMD slicer; rerun EXPORT after changing the contract or author mesh.
+
+When `texture_bake` is declared, set the named UV layer as both `mesh.uv_layers.active` and the layer's `active_render` flag before `bpy.ops.object.bake`. Blender's bake operator can read the active-render layer while EXPORT reads the evaluated active UV; a mismatch produces a visually valid but incorrectly mapped texture. `require_active_render` defaults to `true`. Without this declaration, PREFLIGHT still reports an active/active-render mismatch as a warning but does not reject otherwise valid explicit UV workflows.
 
 Each bone rename source and target is unique, targets one final contract bone, and may not form a chain or cycle. Artifact SMD skeletons are canonicalized through this map before comparison, while Blender preflight and compiled MDL inspection continue to require the final names. Compatibility baselines are checked during `INSPECT`: player models preserve the sequence table, FPS, frame ceilings, ordered baseline bone prefix, terminal appendages, hitboxes, skin/bodypart shape; NPC models preserve the baseline sequence prefix and may only append sequences. Blend-count differences are reported as the explicit API-1 multi-source-authoring limitation rather than treated as implemented support.
 

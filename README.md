@@ -8,6 +8,8 @@ Version `1.3.3` adds labeled `3x2` contact sheets for five-point Action readback
 
 The current source also supports logical large textures and over-budget reference SMDs. A logical `2048x2048` atlas is exported as sixteen `512x512` indexed BMPs inside one MDL; EXPORT clips and retriangulates triangles crossing tile boundaries, then remaps each triangle to local tile UVs. GoldSrc does not receive a `2048x2048` texture entry. Reference SMDs are split by compiled `(bone, position)`, `(bone, normal)`, and triangle budgets into multiple `$body` entries. Bodygroup choices are rejected when they need splitting. Simple line slicers such as `smdcutpy.py` are not a substitute for this path.
 
+For author-baked procedural/PBR colors, a contract can declare `texture_bake.uv_layer` and require the same UV layer to be both Blender's active and active-render layer. PREFLIGHT reports an undeclared mismatch and fails an explicit mismatch before EXPORT can produce a misleading texture mapping. The Extension does not bake node graphs or certify lighting provenance: use the authoring workflow's temporary Emission/`EMIT` bake when the source atlas must contain no material lighting or shadow contribution, then give EXPORT the saved image-backed result.
+
 ## Install
 
 Download `goldsrc_model_toolchain-1.3.3-windows-x64.zip` and its checksum from the [v1.3.3 release](https://github.com/XiangXtreme/goldsrc-model-toolchain/releases/tag/v1.3.3), verify SHA-256, then install the ZIP as a Blender Extension in the `user_default` repository.

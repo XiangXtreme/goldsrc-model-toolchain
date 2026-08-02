@@ -34,6 +34,7 @@ class ExtensionArchitectureTests(unittest.TestCase):
         self.assertIn('"bounds_aware_roundtrip_camera": True', source)
         self.assertIn('"blank_preview_rejection": True', source)
         self.assertIn('"evaluated_uv_material_reports": True', source)
+        self.assertIn('"texture_bake_uv_guard": True', source)
         self.assertIn('"failed_requirement_evidence": True', source)
         self.assertIn('"large_texture_tiling": {', source)
         self.assertIn('"smd_budget_split": {', source)

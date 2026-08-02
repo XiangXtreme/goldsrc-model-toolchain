@@ -21,6 +21,12 @@ class NamedCollection(list):
         return next((item for item in self if item.name == name), None)
 
 
+class UVLayers(list):
+    def __init__(self, layers, active):
+        super().__init__(layers)
+        self.active = active
+
+
 def fake_scene(*, frame_current=0, action_bound=True):
     material = SimpleNamespace(name="base.bmp", use_nodes=False)
     group = SimpleNamespace(index=0, name="root")
@@ -83,8 +89,10 @@ class BlenderPreflightTests(unittest.TestCase):
             SimpleNamespace(uv=SimpleNamespace(x=0.1, y=0.2)),
             SimpleNamespace(uv=SimpleNamespace(x=0.9, y=0.8)),
         ]
+        active = SimpleNamespace(name="GoldSrcUV", data=uv_data, active_render=False)
+        render = SimpleNamespace(name="automap", data=[], active_render=True)
         mesh = SimpleNamespace(
-            uv_layers=SimpleNamespace(active=SimpleNamespace(name="GoldSrcUV", data=uv_data)),
+            uv_layers=UVLayers([active, render], active),
             materials=[SimpleNamespace(name="terrain_base.bmp")],
         )
         evaluated = SimpleNamespace(
@@ -100,9 +108,65 @@ class BlenderPreflightTests(unittest.TestCase):
 
         self.assertTrue(facts["available"])
         self.assertEqual(facts["active_uv"], "GoldSrcUV")
+        self.assertEqual(facts["active_render_uv"], "automap")
+        self.assertEqual(facts["uv_layers"], ["GoldSrcUV", "automap"])
         self.assertEqual(facts["uv_loop_count"], 2)
         self.assertEqual(facts["uv_bounds"], {"min": [0.1, 0.2], "max": [0.9, 0.8]})
         self.assertEqual(facts["material_slots"], ["terrain_base.bmp"])
+
+    def test_texture_bake_contract_rejects_wrong_active_render_uv(self) -> None:
+        bpy = fake_scene()
+        active = SimpleNamespace(name="GoldSrcUV", data=[], active_render=False)
+        render = SimpleNamespace(name="automap", data=[], active_render=True)
+        bpy.context.scene.objects[0].data.uv_layers = UVLayers([active, render], active)
+        evaluated_mesh = SimpleNamespace(
+            uv_layers=UVLayers([active, render], active),
+            materials=[SimpleNamespace(name="base.bmp")],
+            vertices=[object(), object(), object()],
+            polygons=[object()],
+            loop_triangles=[object()],
+            calc_loop_triangles=lambda: None,
+        )
+        bpy.context.scene.objects[0].evaluated_get = lambda _depsgraph: SimpleNamespace(
+            to_mesh=lambda **_kwargs: evaluated_mesh,
+            to_mesh_clear=lambda: None,
+        )
+        bpy.context.evaluated_depsgraph_get = lambda: object()
+        contract = copy.deepcopy(base_contract())
+        contract["texture_bake"] = {"uv_layer": "GoldSrcUV", "require_active_render": True}
+
+        report = inspect_scene(contract, bpy_module=bpy)
+
+        codes = {item["code"] for item in report["issues"]}
+        self.assertEqual(report["status"], "fail")
+        self.assertIn("mesh.active_render_uv_mismatch", codes)
+        self.assertIn("mesh.texture_bake_uv_not_active_render", codes)
+
+    def test_texture_bake_contract_passes_when_active_render_matches(self) -> None:
+        bpy = fake_scene()
+        active = SimpleNamespace(name="GoldSrcUV", data=[], active_render=True)
+        other = SimpleNamespace(name="automap", data=[], active_render=False)
+        bpy.context.scene.objects[0].data.uv_layers = UVLayers([active, other], active)
+        evaluated_mesh = SimpleNamespace(
+            uv_layers=UVLayers([active, other], active),
+            materials=[SimpleNamespace(name="base.bmp")],
+            vertices=[object(), object(), object()],
+            polygons=[object()],
+            loop_triangles=[object()],
+            calc_loop_triangles=lambda: None,
+        )
+        bpy.context.scene.objects[0].evaluated_get = lambda _depsgraph: SimpleNamespace(
+            to_mesh=lambda **_kwargs: evaluated_mesh,
+            to_mesh_clear=lambda: None,
+        )
+        bpy.context.evaluated_depsgraph_get = lambda: object()
+        contract = copy.deepcopy(base_contract())
+        contract["texture_bake"] = {"uv_layer": "GoldSrcUV"}
+
+        report = inspect_scene(contract, bpy_module=bpy)
+
+        self.assertEqual(report["status"], "pass")
+        self.assertEqual(report["facts"]["meshes"][0]["texture_bake"]["target_uv"], "GoldSrcUV")
 
     def test_vertex_overflow_is_export_split_warning_for_every_bundled_profile(self) -> None:
         for profile in ("half-life-cs", "sven-coop"):

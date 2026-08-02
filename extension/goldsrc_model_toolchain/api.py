@@ -95,6 +95,7 @@ class RuntimeAPI:
                 "blank_preview_rejection": True,
                 "preflight_object_bounds": True,
                 "evaluated_uv_material_reports": True,
+                "texture_bake_uv_guard": True,
                 "failed_requirement_evidence": True,
                 "large_texture_tiling": {
                     "source_tile_size": 512,
