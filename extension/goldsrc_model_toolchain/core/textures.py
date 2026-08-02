@@ -155,41 +155,72 @@ def _write_indexed_bmp_from_rgba(
     height: int,
     masked: bool,
     alpha_threshold: int,
+    input_color_space: str = "linear",
+    row_origin: str = "bottom-left",
 ) -> None:
-    """Write a deterministic 3-3-2 indexed BMP without external image packages.
+    """Write a deterministic indexed BMP without external image packages.
 
     This is deliberately a small fallback for Blender's embedded Python, where
     the host Pillow installation is not necessarily importable.  The normal
-    host-side path still uses Pillow's higher quality quantizer.
+    path uses Pillow's higher quality median-cut quantizer. Blender image
+    buffers are scene-linear and bottom-left-origin unless a caller explicitly
+    identifies a different representation.
     """
 
     values = list(rgba)
     expected = width * height * 4
     if len(values) != expected:
         raise TextureError(f"Blender image returned {len(values)} channels, expected {expected}")
+    if input_color_space not in {"linear", "srgb"}:
+        raise TextureError(f"unsupported RGBA input color space: {input_color_space}")
+    if row_origin not in {"bottom-left", "top-left"}:
+        raise TextureError(f"unsupported RGBA row origin: {row_origin}")
+
     indices = bytearray(width * height)
-    for pixel in range(width * height):
-        red = round(_linear_to_srgb(values[pixel * 4]) * 255.0)
-        green = round(_linear_to_srgb(values[pixel * 4 + 1]) * 255.0)
-        blue = round(_linear_to_srgb(values[pixel * 4 + 2]) * 255.0)
-        alpha = max(0, min(255, round(float(values[pixel * 4 + 3]) * 255.0)))
-        if masked and alpha < alpha_threshold:
-            indices[pixel] = 255
-            continue
-        # Reserve palette index 255 for GoldSrc masked blue.
-        indices[pixel] = min(254, ((red >> 5) << 5) | ((green >> 5) << 2) | (blue >> 6))
+    for top_row in range(height):
+        source_row = height - 1 - top_row if row_origin == "bottom-left" else top_row
+        for column in range(width):
+            source_pixel = source_row * width + column
+            destination_pixel = top_row * width + column
+            channels = []
+            for channel in range(3):
+                value = float(values[source_pixel * 4 + channel])
+                encoded = _linear_to_srgb(value) if input_color_space == "linear" else max(0.0, min(1.0, value))
+                channels.append(round(encoded * 255.0))
+            red, green, blue = channels
+            alpha = max(0, min(255, round(float(values[source_pixel * 4 + 3]) * 255.0)))
+            if masked and alpha < alpha_threshold:
+                indices[destination_pixel] = 255
+            elif masked:
+                # 6 x 7 x 6 leaves indices 252..254 unused and index 255
+                # exclusively available for GoldSrc masked transparency.
+                red_bin = min(5, red * 6 // 256)
+                green_bin = min(6, green * 7 // 256)
+                blue_bin = min(5, blue * 6 // 256)
+                indices[destination_pixel] = red_bin * 42 + green_bin * 6 + blue_bin
+            else:
+                # Non-masked textures own all 256 entries, including white at 255.
+                indices[destination_pixel] = ((red >> 5) << 5) | ((green >> 5) << 2) | (blue >> 6)
 
     stride = (width + 3) & ~3
     image_size = stride * height
     pixel_offset = 14 + 40 + 256 * 4
     file_size = pixel_offset + image_size
     palette = bytearray()
-    for index in range(255):
-        red = round(((index >> 5) & 7) * 255 / 7)
-        green = round(((index >> 2) & 7) * 255 / 7)
-        blue = round((index & 3) * 255 / 3)
-        palette.extend((blue, green, red, 0))
-    palette.extend((255, 0, 0, 0))
+    if masked:
+        for index in range(252):
+            red = round((index // 42) * 255 / 5)
+            green = round(((index % 42) // 6) * 255 / 6)
+            blue = round((index % 6) * 255 / 5)
+            palette.extend((blue, green, red, 0))
+        palette.extend(bytes(3 * 4))
+        palette.extend((255, 0, 0, 0))
+    else:
+        for index in range(256):
+            red = round(((index >> 5) & 7) * 255 / 7)
+            green = round(((index >> 2) & 7) * 255 / 7)
+            blue = round((index & 3) * 255 / 3)
+            palette.extend((blue, green, red, 0))
     rows = bytearray()
     padding = bytes(stride - width)
     for row in range(height - 1, -1, -1):
@@ -202,6 +233,168 @@ def _write_indexed_bmp_from_rgba(
     destination.write_bytes(header + dib + palette + rows)
 
 
+def _rgba_to_display_bytes(
+    rgba: Iterable[float],
+    *,
+    width: int,
+    height: int,
+    input_color_space: str,
+    row_origin: str,
+) -> bytes:
+    values = list(rgba)
+    expected = width * height * 4
+    if len(values) != expected:
+        raise TextureError(f"RGBA input returned {len(values)} channels, expected {expected}")
+    if input_color_space not in {"linear", "srgb"}:
+        raise TextureError(f"unsupported RGBA input color space: {input_color_space}")
+    if row_origin not in {"bottom-left", "top-left"}:
+        raise TextureError(f"unsupported RGBA row origin: {row_origin}")
+    output = bytearray(expected)
+    for top_row in range(height):
+        source_row = height - 1 - top_row if row_origin == "bottom-left" else top_row
+        for column in range(width):
+            source = (source_row * width + column) * 4
+            target = (top_row * width + column) * 4
+            for channel in range(3):
+                value = float(values[source + channel])
+                encoded = _linear_to_srgb(value) if input_color_space == "linear" else max(0.0, min(1.0, value))
+                output[target + channel] = round(encoded * 255.0)
+            output[target + 3] = max(0, min(255, round(float(values[source + 3]) * 255.0)))
+    return bytes(output)
+
+
+def _quantize_pillow_image(image, destination: Path, *, masked: bool, alpha_threshold: int):
+    from PIL import Image
+
+    rgba = image.convert("RGBA")
+    alpha_values = bytearray(rgba.getchannel("A").tobytes())
+    if masked:
+        rgb_values = list(rgba.convert("RGB").getdata())
+        visible = [index for index, alpha in enumerate(alpha_values) if alpha >= alpha_threshold]
+        fill = rgb_values[visible[0]] if visible else (0, 0, 0)
+        for index, alpha in enumerate(alpha_values):
+            if alpha < alpha_threshold:
+                rgb_values[index] = fill
+        rgb = Image.new("RGB", rgba.size)
+        rgb.putdata(rgb_values)
+        indexed = rgb.quantize(colors=255, method=Image.Quantize.MEDIANCUT)
+        palette = list(indexed.getpalette()[: 255 * 3])
+        palette.extend([0] * (255 * 3 - len(palette)))
+        palette.extend([0, 0, 255])
+        indexed.putpalette(palette)
+        values = bytearray(indexed.tobytes())
+        for index, alpha in enumerate(alpha_values):
+            if alpha < alpha_threshold:
+                values[index] = 255
+        indexed.frombytes(bytes(values))
+    else:
+        indexed = rgba.convert("RGB").quantize(colors=256, method=Image.Quantize.MEDIANCUT)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    indexed.save(destination, format="BMP", compression="raw")
+    _expand_palette_to_256(destination)
+    return rgba
+
+
+def _row_mean(image, row: int) -> list[float]:
+    pixels = list(image.convert("RGB").crop((0, row, image.width, row + 1)).getdata())
+    return [round(sum(pixel[channel] for pixel in pixels) / len(pixels), 3) for channel in range(3)]
+
+
+def _texture_fidelity(source, destination: Path, *, masked: bool, alpha_threshold: int) -> dict:
+    from PIL import Image
+
+    source = source.convert("RGBA")
+    output = Image.open(destination).convert("RGB")
+    source_rgb = list(source.convert("RGB").getdata())
+    output_rgb = list(output.getdata())
+    alpha = source.getchannel("A").tobytes()
+    visible = [index for index, value in enumerate(alpha) if not masked or value >= alpha_threshold]
+
+    def errors(candidate: list[tuple[int, int, int]]) -> tuple[float | None, int | None]:
+        channel_errors = [
+            abs(source_rgb[index][channel] - candidate[index][channel])
+            for index in visible for channel in range(3)
+        ]
+        if not channel_errors:
+            return None, None
+        return sum(channel_errors) / len(channel_errors), max(channel_errors)
+
+    direct_mae, maximum = errors(output_rgb)
+    flipped = list(output.transpose(Image.Transpose.FLIP_TOP_BOTTOM).getdata())
+    flipped_mae, _unused = errors(flipped)
+    if direct_mae is None or flipped_mae is None or abs(direct_mae - flipped_mae) < 0.000001:
+        orientation = "tie"
+    elif direct_mae < flipped_mae:
+        orientation = "direct"
+    else:
+        orientation = "vertically_flipped"
+    return {
+        "source_visible_color_count": len({source_rgb[index] for index in visible}),
+        "output_visible_color_count": len({output_rgb[index] for index in visible}),
+        "mean_absolute_channel_error": round(direct_mae, 6) if direct_mae is not None else None,
+        "max_absolute_channel_error": maximum,
+        "orientation": {
+            "preferred": orientation,
+            "direct_mae": round(direct_mae, 6) if direct_mae is not None else None,
+            "vertically_flipped_mae": round(flipped_mae, 6) if flipped_mae is not None else None,
+            "source_top_rgb_mean": _row_mean(source, 0),
+            "source_bottom_rgb_mean": _row_mean(source, source.height - 1),
+            "output_top_rgb_mean": _row_mean(output, 0),
+            "output_bottom_rgb_mean": _row_mean(output, output.height - 1),
+        },
+    }
+
+
+def convert_rgba_to_indexed_bmp(
+    rgba: Iterable[float],
+    destination: Path | str,
+    *,
+    width: int,
+    height: int,
+    modes: list[str] | tuple[str, ...] = (),
+    alpha_threshold: int = 128,
+    input_color_space: str = "linear",
+    row_origin: str = "bottom-left",
+    require_masked_pixels: bool = True,
+) -> dict:
+    """Convert an explicitly described RGBA buffer to a GoldSrc BMP."""
+
+    destination_path = Path(destination).expanduser().resolve()
+    masked = "masked" in {mode.casefold() for mode in modes}
+    values = list(rgba)
+    try:
+        from PIL import Image
+    except ImportError:
+        _write_indexed_bmp_from_rgba(
+            values, destination_path, width=width, height=height, masked=masked,
+            alpha_threshold=alpha_threshold, input_color_space=input_color_space, row_origin=row_origin,
+        )
+        facts = validate_indexed_bmp(
+            destination_path, width=width, height=height, modes=modes,
+            require_masked_pixels=masked and require_masked_pixels,
+        )
+        facts["conversion"] = {
+            "method": "deterministic_fallback", "input_color_space": input_color_space,
+            "source_row_origin": row_origin, "fidelity": None,
+        }
+        return facts
+    display_bytes = _rgba_to_display_bytes(
+        values, width=width, height=height, input_color_space=input_color_space, row_origin=row_origin,
+    )
+    source = Image.frombytes("RGBA", (width, height), display_bytes)
+    source = _quantize_pillow_image(source, destination_path, masked=masked, alpha_threshold=alpha_threshold)
+    facts = validate_indexed_bmp(
+        destination_path, width=width, height=height, modes=modes,
+        require_masked_pixels=masked and require_masked_pixels,
+    )
+    facts["conversion"] = {
+        "method": "pillow_mediancut_rgba", "input_color_space": input_color_space,
+        "source_row_origin": row_origin,
+        "fidelity": _texture_fidelity(source, destination_path, masked=masked, alpha_threshold=alpha_threshold),
+    }
+    return facts
+
+
 def _convert_with_blender_image(
     source: Path,
     destination: Path,
@@ -210,7 +403,8 @@ def _convert_with_blender_image(
     height: int,
     masked: bool,
     alpha_threshold: int,
-) -> None:
+    require_masked_pixels: bool = True,
+) -> dict:
     """Use Blender's image datablock when Pillow is unavailable in Blender."""
 
     try:
@@ -226,13 +420,16 @@ def _convert_with_blender_image(
     try:
         if tuple(image.size) != (width, height):
             image.scale(width, height)
-        _write_indexed_bmp_from_rgba(
+        return convert_rgba_to_indexed_bmp(
             image.pixels,
             destination,
             width=width,
             height=height,
-            masked=masked,
+            modes=["masked"] if masked else [],
             alpha_threshold=alpha_threshold,
+            input_color_space="linear",
+            row_origin="bottom-left",
+            require_masked_pixels=require_masked_pixels,
         )
     finally:
         if image.users == 0:
@@ -247,6 +444,7 @@ def convert_to_indexed_bmp(
     height: int,
     modes: list[str] | tuple[str, ...] = (),
     alpha_threshold: int = 128,
+    require_masked_pixels: bool = True,
 ) -> dict:
     if width <= 0 or height <= 0 or width > 512 or height > 512 or width % 16 or height % 16:
         raise TextureError("destination dimensions must be multiples of 16 within 1..512")
@@ -256,39 +454,26 @@ def convert_to_indexed_bmp(
     try:
         from PIL import Image
     except ImportError:
-        _convert_with_blender_image(
+        return _convert_with_blender_image(
             source_path,
             destination_path,
             width=width,
             height=height,
             masked=masked,
             alpha_threshold=alpha_threshold,
+            require_masked_pixels=require_masked_pixels,
         )
-        _expand_palette_to_256(destination_path)
-        return validate_indexed_bmp(
-            destination_path, width=width, height=height, modes=modes, require_masked_pixels=masked
-        )
-    image = Image.open(source_path).convert("RGBA").resize((width, height), Image.Resampling.LANCZOS)
-    if masked:
-        alpha = image.getchannel("A")
-        rgb = Image.new("RGB", image.size, (0, 0, 255))
-        rgb.paste(image.convert("RGB"), mask=alpha.point(lambda value: 255 if value >= alpha_threshold else 0))
-        indexed = rgb.quantize(colors=255, method=Image.Quantize.MEDIANCUT)
-        palette = list(indexed.getpalette()[: 255 * 3])
-        palette.extend([0] * (255 * 3 - len(palette)))
-        palette.extend([0, 0, 255])
-        indexed.putpalette(palette)
-        values = bytearray(indexed.tobytes())
-        alpha_values = alpha.tobytes()
-        for index, value in enumerate(alpha_values):
-            if value < alpha_threshold:
-                values[index] = 255
-        indexed.frombytes(bytes(values))
-    else:
-        indexed = image.convert("RGB").quantize(colors=256, method=Image.Quantize.MEDIANCUT)
-    destination_path.parent.mkdir(parents=True, exist_ok=True)
-    indexed.save(destination_path, format="BMP", compression="raw")
-    _expand_palette_to_256(destination_path)
-    return validate_indexed_bmp(
-        destination_path, width=width, height=height, modes=modes, require_masked_pixels=masked
+    with Image.open(source_path) as opened:
+        image = opened.convert("RGBA").resize((width, height), Image.Resampling.LANCZOS)
+    source = _quantize_pillow_image(image, destination_path, masked=masked, alpha_threshold=alpha_threshold)
+    facts = validate_indexed_bmp(
+        destination_path, width=width, height=height, modes=modes,
+        require_masked_pixels=masked and require_masked_pixels,
     )
+    facts["conversion"] = {
+        "method": "pillow_mediancut_file", "input_color_space": "file_encoded_srgb",
+        "source_row_origin": "top-left",
+        "source": str(source_path),
+        "fidelity": _texture_fidelity(source, destination_path, masked=masked, alpha_threshold=alpha_threshold),
+    }
+    return facts

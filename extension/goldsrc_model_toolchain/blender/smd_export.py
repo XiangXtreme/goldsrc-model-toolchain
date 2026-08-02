@@ -12,7 +12,7 @@ from mathutils import Matrix, Vector
 from ..core.errors import ToolchainError
 from ..core.model_contract import load_contract, write_qc
 from ..core.smd import animation_budget_hint, audit_loop_endpoint, read_smd, validate_smd
-from ..core.textures import _write_indexed_bmp_from_rgba, validate_indexed_bmp
+from ..core.textures import convert_rgba_to_indexed_bmp, convert_to_indexed_bmp, validate_indexed_bmp
 
 
 def _inside(path: Path, root: Path) -> bool:
@@ -314,25 +314,47 @@ def _export_texture(root: Path, texture: dict) -> dict:
             {"texture": texture["name"]},
         )
     image.update()
-    copy = None
-    try:
-        source = image
-        if tuple(image.size) != (texture["width"], texture["height"]):
-            copy = image.copy()
-            copy.scale(texture["width"], texture["height"])
-            copy.update()
-            source = copy
-        _write_indexed_bmp_from_rgba(
-            source.pixels[:], destination, width=texture["width"], height=texture["height"],
-            masked="masked" in texture.get("modes", []), alpha_threshold=int(texture.get("alpha_threshold", 128)),
+    modes = texture.get("modes", [])
+    alpha_threshold = int(texture.get("alpha_threshold", 128))
+    require_masked_pixels = bool(texture.get("require_masked_pixels", True))
+    filepath = bpy.path.abspath(image.filepath or "")
+    disk_source = Path(filepath).expanduser().resolve() if filepath else None
+    if (
+        image.source in {"FILE", "SEQUENCE"}
+        and disk_source is not None
+        and disk_source.is_file()
+        and not bool(getattr(image, "is_dirty", False))
+    ):
+        # File pixels are already display-encoded. Reading the source file also
+        # avoids stale datablocks and any second linear-to-sRGB conversion.
+        facts = convert_to_indexed_bmp(
+            disk_source, destination, width=texture["width"], height=texture["height"],
+            modes=modes, alpha_threshold=alpha_threshold, require_masked_pixels=require_masked_pixels,
         )
-    finally:
-        if copy is not None:
-            bpy.data.images.remove(copy)
-    facts = validate_indexed_bmp(
-        destination, width=texture["width"], height=texture["height"], modes=texture.get("modes", []),
-        require_masked_pixels=texture.get("require_masked_pixels", True),
-    )
+        facts["conversion"]["blender_image"] = image.name
+    else:
+        copy = None
+        try:
+            source = image
+            if tuple(image.size) != (texture["width"], texture["height"]):
+                copy = image.copy()
+                copy.scale(texture["width"], texture["height"])
+                copy.update()
+                source = copy
+            facts = convert_rgba_to_indexed_bmp(
+                source.pixels[:], destination, width=texture["width"], height=texture["height"],
+                modes=modes, alpha_threshold=alpha_threshold,
+                input_color_space="linear", row_origin="bottom-left",
+                require_masked_pixels=require_masked_pixels,
+            )
+            facts["conversion"]["blender_image"] = image.name
+        finally:
+            if copy is not None:
+                bpy.data.images.remove(copy)
+    facts = {
+        **facts,
+        "required_masked_pixels": require_masked_pixels,
+    }
     hard_risks = sorted(set(facts["risk_labels"]) & {"no_visible_pixels", "all_visible_pixels_black"})
     if hard_risks:
         raise ToolchainError(
@@ -408,7 +430,15 @@ def export_contract(contract_path: str | Path, artifacts_dir: str | Path) -> dic
         "actions": [sequence["action"] for sequence in contract["sequences"]],
         "reference_smds": references,
         "animation_smds": animations,
-        "textures": [{"name": item["name"], "used_color_count": item["used_color_count"]} for item in textures],
+        "textures": [
+            {
+                "name": item["name"],
+                "used_color_count": item["used_color_count"],
+                "conversion_method": item.get("conversion", {}).get("method"),
+                "fidelity": item.get("conversion", {}).get("fidelity"),
+            }
+            for item in textures
+        ],
     }
     return {
         "status": "pass",

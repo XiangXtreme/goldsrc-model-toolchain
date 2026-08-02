@@ -85,8 +85,12 @@ def _scene():
     pixels = []
     for y in range(64):
         for x in range(64):
-            checker = ((x // 8) + (y // 8)) % 2
-            pixels.extend((0.12 + checker * 0.55, 0.3 + checker * 0.35, 0.75 - checker * 0.45, 1.0))
+            pixels.extend((
+                0.03 + 0.85 * x / 63.0,
+                0.05 + 0.75 * y / 63.0,
+                0.08 + 0.65 * (x + y) / 126.0,
+                1.0,
+            ))
     image.pixels.foreach_set(pixels)
     image.update()
     material = bpy.data.materials.new("base.bmp")
@@ -184,6 +188,15 @@ def main() -> dict:
         raise RuntimeError(f"bright fixture texture is not visible in round-trip previews: {foreground}")
     if results["ROUNDTRIP"]["bounds"]["view_axis"] != "X":
         raise RuntimeError(f"thin-axis camera regression: {results['ROUNDTRIP']['bounds']}")
+    texture = results["EXPORT"]["textures"][0]
+    conversion = texture.get("conversion", {})
+    fidelity = conversion.get("fidelity") or {}
+    if conversion.get("method") != "pillow_mediancut_rgba":
+        raise RuntimeError(f"EXPORT bypassed the high-quality RGBA converter: {conversion}")
+    if fidelity.get("orientation", {}).get("preferred") == "vertically_flipped":
+        raise RuntimeError(f"EXPORT vertically flipped the Blender image: {fidelity}")
+    if fidelity.get("mean_absolute_channel_error", 999) > 8 or fidelity.get("max_absolute_channel_error", 999) > 40:
+        raise RuntimeError(f"EXPORT texture fidelity regression: {fidelity}")
     mesh_facts = results["PREFLIGHT"]["facts"]["meshes"]
     dimensions = mesh_facts[0].get("dimensions") if mesh_facts else None
     if not dimensions or any(
@@ -202,6 +215,7 @@ def main() -> dict:
         "preview_foreground_max": max(foreground),
         "roundtrip_view_axis": results["ROUNDTRIP"]["bounds"]["view_axis"],
         "preflight_dimensions": mesh_facts[0]["dimensions"],
+        "texture_conversion": conversion,
         "repeat_roundtrip": "pass",
         "repeat_names": repeated_names,
     }

@@ -41,6 +41,7 @@ from goldsrc_toolchain.textures import (
     TextureError,
     _convert_with_blender_image,
     _write_indexed_bmp_from_rgba,
+    convert_rgba_to_indexed_bmp,
     convert_to_indexed_bmp,
     validate_indexed_bmp,
 )
@@ -571,6 +572,18 @@ class TextureTests(unittest.TestCase):
             self.assertEqual(facts["palette_entries"], 256)
             self.assertGreater(len(facts["indices_used"]), 1)
 
+    def test_nonmasked_fallback_owns_index_255_and_preserves_white(self) -> None:
+        rgba = [1.0, 1.0, 1.0, 1.0] * (16 * 16)
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "white.bmp"
+            _write_indexed_bmp_from_rgba(
+                rgba, destination, width=16, height=16, masked=False,
+                alpha_threshold=128, input_color_space="srgb", row_origin="top-left",
+            )
+            facts = validate_indexed_bmp(destination, width=16, height=16)
+            self.assertEqual(facts["indices_used"], [255])
+            self.assertEqual(Image.open(destination).convert("RGB").getpixel((0, 0)), (255, 255, 255))
+
     def test_embedded_fallback_encodes_linear_rgb_as_srgb(self) -> None:
         linear_middle_gray = 0.21586
         rgba = [linear_middle_gray, linear_middle_gray, linear_middle_gray, 1.0] * (16 * 16)
@@ -603,6 +616,44 @@ class TextureTests(unittest.TestCase):
             self.assertEqual(facts["transparent_pixel_count"], 3072)
             self.assertEqual(facts["visible_pixel_count"], 1024)
             self.assertIsNotNone(facts["weighted_mean_luminance"])
+
+    def test_file_converter_preserves_grayscale_and_top_bottom_orientation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "vertical.png"
+            image = Image.new("RGBA", (64, 64))
+            for y in range(64):
+                value = round(255 * y / 63)
+                for x in range(64):
+                    image.putpixel((x, y), (value, value, value, 255))
+            image.save(source)
+            facts = convert_to_indexed_bmp(source, root / "vertical.bmp", width=64, height=64)
+            converted = Image.open(root / "vertical.bmp").convert("RGB")
+            self.assertLess(converted.getpixel((0, 0))[0], converted.getpixel((0, 63))[0])
+            self.assertTrue(all(red == green == blue for red, green, blue in converted.getdata()))
+            fidelity = facts["conversion"]["fidelity"]
+            self.assertEqual(facts["conversion"]["method"], "pillow_mediancut_file")
+            self.assertEqual(fidelity["orientation"]["preferred"], "direct")
+            self.assertLessEqual(fidelity["mean_absolute_channel_error"], 1.0)
+            self.assertLessEqual(fidelity["max_absolute_channel_error"], 1)
+
+    def test_rgba_converter_declares_bottom_left_linear_input(self) -> None:
+        rgba = []
+        for bottom_row in range(16):
+            value = bottom_row / 15.0
+            for _x in range(16):
+                rgba.extend((value, value, value, 1.0))
+        with tempfile.TemporaryDirectory() as temporary:
+            destination = Path(temporary) / "buffer.bmp"
+            facts = convert_rgba_to_indexed_bmp(
+                rgba, destination, width=16, height=16,
+                input_color_space="linear", row_origin="bottom-left",
+            )
+            converted = Image.open(destination).convert("RGB")
+            self.assertGreater(converted.getpixel((0, 0))[0], converted.getpixel((0, 15))[0])
+            self.assertEqual(facts["conversion"]["input_color_space"], "linear")
+            self.assertEqual(facts["conversion"]["source_row_origin"], "bottom-left")
+            self.assertEqual(facts["conversion"]["fidelity"]["orientation"]["preferred"], "direct")
 
     def test_indexed_texture_reports_color_and_luminance_risks(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
