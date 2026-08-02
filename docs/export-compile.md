@@ -56,7 +56,7 @@ Sven StudioMDL is used for corrected UV/attachment behavior while the contract t
 - explicit bbox/cbox;
 - decoded animation channels against source SMD global transforms.
 
-`ROUNDTRIP` deliberately uses a separate SourceIO-derived GoldSrc-only reader. Do not merge it with `core/mdl_v10.py`; shared parsing would make the acceptance claim circular. It reconstructs meshes, armature, embedded textures, bodygroups, all skin-family metadata, and embedded sequence Actions, then saves five-point previews and a playback-ready Blend.
+`ROUNDTRIP` deliberately uses a separate SourceIO-derived GoldSrc-only reader. Do not merge it with `core/mdl_v10.py`; shared parsing would make the acceptance claim circular. It reconstructs meshes, armature, embedded textures, bodygroups, all skin-family metadata, and embedded sequence Actions, then saves five-point previews, one labeled contact sheet per Action, and a playback-ready Blend. Each contact sheet has a JSON layout sidecar containing source paths, hashes, frame labels, and non-overlapping image/caption rectangles; original stills remain authoritative for detailed inspection.
 
 External sequence groups remain a limitation only when explicitly declared by the contract. Missing embedded Actions or later skin families are regressions, not default blockers.
 

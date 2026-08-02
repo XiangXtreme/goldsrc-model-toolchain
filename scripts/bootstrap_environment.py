@@ -329,7 +329,7 @@ def main() -> int:
         raise RuntimeError("Configure the official blender-mcp service externally before bootstrap")
     blender = Path(before["blender"]["path"])
     with tempfile.TemporaryDirectory(prefix="goldsrc_extension_build_") as temporary:
-        archive = Path(temporary) / "goldsrc_model_toolchain-1.3.2-windows-x64.zip"
+        archive = Path(temporary) / "goldsrc_model_toolchain-1.3.3-windows-x64.zip"
         build_report = build_extension(archive, blender=blender)
         installed = _install_extension(blender, archive)
     configured = _configure_blender(blender)

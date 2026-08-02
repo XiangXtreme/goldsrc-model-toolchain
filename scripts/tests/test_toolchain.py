@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import math
 import struct
@@ -36,7 +37,12 @@ from goldsrc_toolchain.smd import (
     validate_smd,
 )
 from goldsrc_toolchain.transforms import euler_xyz_rotation_error
-from goldsrc_toolchain.visual_evidence import choose_front_axis, summarize_preview_visibility
+from goldsrc_toolchain.visual_evidence import (
+    choose_front_axis,
+    create_labeled_contact_sheet,
+    representative_sample_labels,
+    summarize_preview_visibility,
+)
 from goldsrc_toolchain.textures import (
     TextureError,
     _convert_with_blender_image,
@@ -445,6 +451,64 @@ class AnimationEvidenceTests(unittest.TestCase):
             {"foreground_fraction": 0.0}, {"foreground_fraction": 0.125},
         ])
         self.assertEqual(visible["status"], "pass")
+
+    def test_contact_sheet_preserves_sources_and_places_labels_outside_images(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            sizes = [(240, 80), (80, 240), (160, 160), (320, 120), (120, 320)]
+            paths = []
+            hashes = []
+            for index, size in enumerate(sizes):
+                path = root / f"sample_{index}.png"
+                image = Image.new("RGBA", size, (30 + index * 35, 80, 190, 90 + index * 30))
+                image.save(path)
+                paths.append(path)
+                hashes.append(hashlib.sha256(path.read_bytes()).hexdigest())
+            report = create_labeled_contact_sheet(
+                [
+                    {
+                        "path": path,
+                        "label": label + " " + "very-long-label-" * 8,
+                        "detail": f"spin | Frame {index * 32:04d} " + "detail-" * 12,
+                    }
+                    for index, (path, label) in enumerate(zip(paths, representative_sample_labels(5)))
+                ],
+                root / "sheet.png",
+                title="Five-point animation readback",
+                columns=3,
+                tile_width=192,
+                tile_height=128,
+            )
+            self.assertEqual((report["rows"], report["columns"]), (2, 3))
+            self.assertEqual(report["tile_size"], [192, 128])
+            self.assertEqual(len(report["cells"]), 5)
+            self.assertEqual(
+                [hashlib.sha256(path.read_bytes()).hexdigest() for path in paths], hashes,
+            )
+            self.assertTrue(Path(report["path"]).is_file())
+            self.assertTrue(Path(report["layout_path"]).is_file())
+            self.assertGreater(Path(report["path"]).stat().st_size, 0)
+            self.assertEqual(json.loads(Path(report["layout_path"]).read_text(encoding="utf-8"))["sha256"], report["sha256"])
+            for cell in report["cells"]:
+                self.assertLessEqual(cell["image_rect"][3], cell["caption_rect"][1])
+                self.assertGreaterEqual(cell["contained_rect"][0], cell["image_rect"][0])
+                self.assertGreaterEqual(cell["contained_rect"][1], cell["image_rect"][1])
+                self.assertLessEqual(cell["contained_rect"][2], cell["image_rect"][2])
+                self.assertLessEqual(cell["contained_rect"][3], cell["image_rect"][3])
+                for key in ("label_bbox", "detail_bbox"):
+                    self.assertGreaterEqual(cell[key][0], cell["caption_rect"][0])
+                    self.assertGreaterEqual(cell[key][1], cell["caption_rect"][1])
+                    self.assertLessEqual(cell[key][2], cell["caption_rect"][2])
+                    self.assertLessEqual(cell[key][3], cell["caption_rect"][3])
+
+    def test_contact_sheet_sample_labels_cover_short_and_five_point_sets(self) -> None:
+        self.assertEqual(representative_sample_labels(1), ["SAMPLE"])
+        self.assertEqual(representative_sample_labels(3), ["START", "MID", "END"])
+        self.assertEqual(
+            representative_sample_labels(5), ["START", "1/4", "MID", "3/4", "END"],
+        )
+        with self.assertRaisesRegex(ValueError, "cannot be negative"):
+            representative_sample_labels(-1)
 
 
 class SmdTests(unittest.TestCase):

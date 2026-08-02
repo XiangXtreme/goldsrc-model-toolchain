@@ -13,7 +13,12 @@ from mathutils import Vector
 from ..core.action_curves import representative_frame_samples
 from ..core.errors import ToolchainError
 from ..core.model_contract import load_contract
-from ..core.visual_evidence import choose_front_axis, summarize_preview_visibility
+from ..core.visual_evidence import (
+    choose_front_axis,
+    create_labeled_contact_sheet,
+    representative_sample_labels,
+    summarize_preview_visibility,
+)
 from .action_import import local_pose_globals
 from .mdl_import import import_mdl
 
@@ -320,24 +325,52 @@ def run_roundtrip(contract_path: str | Path, artifacts_dir: str | Path) -> dict:
     weighted_vertex_audit = _audit_weighted_vertices(imported)
     bounds = _configure_render(imported["objects"])
     previews = []
+    contact_sheets = []
     for action in imported["actions"]:
         _bind_action(imported["armature"], action)
         samples = representative_frame_samples(action.frame_range, maximum=5)
         if len(samples) < min(5, max(1, round(action.frame_range[1] - action.frame_range[0] + 1))):
             raise ToolchainError("ROUNDTRIP", "roundtrip.samples", "Action did not produce bounded representative samples", {"action": action.name, "samples": samples})
         hashes = set()
-        for frame in samples:
+        action_previews = []
+        sample_labels = representative_sample_labels(len(samples))
+        for sample_index, frame in enumerate(samples):
             bpy.context.scene.frame_set(int(round(frame)))
             path = root / f"roundtrip_{action.name}_{int(round(frame)):04d}.png"
             facts = _render(path)
-            facts.update({"action": action.name, "frame": frame})
+            facts.update({
+                "action": action.name,
+                "frame": frame,
+                "sample_label": sample_labels[sample_index],
+            })
             hashes.add(facts["sha256"])
             previews.append(facts)
+            action_previews.append(facts)
         if action.frame_range[1] > action.frame_range[0] and len(hashes) == 1:
             raise ToolchainError(
                 "ROUNDTRIP", "roundtrip.static_previews", "Animated Action produced identical five-point previews",
                 {"action": action.name, "samples": samples},
             )
+        sheet_path = root / f"roundtrip_{action.name}_contact_sheet.png"
+        sheet = create_labeled_contact_sheet(
+            [
+                {
+                    "path": preview["path"],
+                    "label": preview["sample_label"],
+                    "detail": f"{action.name} | Frame {int(round(preview['frame'])):04d}",
+                }
+                for preview in action_previews
+            ],
+            sheet_path,
+            title=f"MDL readback | {action.name}",
+            columns=min(3, len(action_previews)),
+        )
+        sheet["action"] = action.name
+        sheet["frames"] = [preview["frame"] for preview in action_previews]
+        Path(sheet["layout_path"]).write_text(
+            json.dumps(sheet, indent=2, ensure_ascii=False) + "\n", encoding="utf-8",
+        )
+        contact_sheets.append(sheet)
     preview_visibility = summarize_preview_visibility(previews)
     if preview_visibility["status"] == "fail":
         raise ToolchainError(
@@ -364,6 +397,7 @@ def run_roundtrip(contract_path: str | Path, artifacts_dir: str | Path) -> dict:
         "action_matrix_audits": imported["action_matrix_audits"],
         "weighted_vertex_audit": weighted_vertex_audit,
         "preview_hashes": [preview["sha256"] for preview in previews],
+        "contact_sheet_hashes": [sheet["sha256"] for sheet in contact_sheets],
         "preview_visibility": preview_visibility,
         "playback": {
             "action": first_action.name if first_action else None,
@@ -380,6 +414,7 @@ def run_roundtrip(contract_path: str | Path, artifacts_dir: str | Path) -> dict:
         "blend": str(blend_path),
         "bounds": bounds,
         "previews": previews,
+        "contact_sheets": contact_sheets,
         "facts": evidence,
         "known_blockers": [],
         "requirement_evidence": _requirements(contract, evidence),

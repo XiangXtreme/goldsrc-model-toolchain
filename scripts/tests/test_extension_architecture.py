@@ -17,7 +17,7 @@ class ExtensionArchitectureTests(unittest.TestCase):
     def test_manifest_has_one_internal_plugin_and_external_mcp(self) -> None:
         manifest = json.loads((REPO_ROOT / "tool-manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(set(manifest["bundles"]), {"goldsrc_model_toolchain"})
-        self.assertEqual(manifest["bundles"]["goldsrc_model_toolchain"]["version"], "1.3.2")
+        self.assertEqual(manifest["bundles"]["goldsrc_model_toolchain"]["version"], "1.3.3")
         self.assertFalse(manifest["external_tools"]["blender_mcp"]["managed_by_extension"])
         self.assertEqual(manifest["external_tools"]["blender_mcp"]["ownership"], "external")
 
@@ -35,6 +35,8 @@ class ExtensionArchitectureTests(unittest.TestCase):
         self.assertIn('"blank_preview_rejection": True', source)
         self.assertIn('"high_quality_texture_quantization": "Pillow MEDIANCUT"', source)
         self.assertIn('"texture_fidelity_report": True', source)
+        self.assertIn('"labeled_visual_contact_sheets": True', source)
+        self.assertIn("def create_visual_contact_sheet", source)
         compiler = EXTENSION / "bin" / "windows-x64" / "studiomdl.exe"
         self.assertEqual(
             hashlib.sha256(compiler.read_bytes()).hexdigest(),

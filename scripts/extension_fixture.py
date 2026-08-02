@@ -188,6 +188,23 @@ def main() -> dict:
         raise RuntimeError(f"bright fixture texture is not visible in round-trip previews: {foreground}")
     if results["ROUNDTRIP"]["bounds"]["view_axis"] != "X":
         raise RuntimeError(f"thin-axis camera regression: {results['ROUNDTRIP']['bounds']}")
+    contact_sheets = results["ROUNDTRIP"].get("contact_sheets", [])
+    if len(contact_sheets) != 1:
+        raise RuntimeError(f"ROUNDTRIP did not create one Action contact sheet: {contact_sheets}")
+    contact_sheet = contact_sheets[0]
+    if (contact_sheet.get("rows"), contact_sheet.get("columns")) != (2, 3):
+        raise RuntimeError(f"five-point contact sheet is not 3x2: {contact_sheet}")
+    if len(contact_sheet.get("cells", [])) != 5 or contact_sheet.get("frames") != [0, 1, 2, 3, 4]:
+        raise RuntimeError(f"contact sheet cells do not match preview frames: {contact_sheet}")
+    for key in ("path", "layout_path"):
+        path = Path(contact_sheet[key])
+        if not path.is_file() or not path.stat().st_size:
+            raise RuntimeError(f"contact sheet output is missing or empty: {path}")
+    if contact_sheet["size"][0] >= 5 * contact_sheet["tile_size"][0]:
+        raise RuntimeError(f"contact sheet regressed to an unreadable single row: {contact_sheet['size']}")
+    repeated_sheet = repeat.get("contact_sheets", [{}])[0]
+    if repeated_sheet.get("sha256") != contact_sheet.get("sha256"):
+        raise RuntimeError(f"repeated ROUNDTRIP produced stale or unstable contact sheet: {repeated_sheet}")
     texture = results["EXPORT"]["textures"][0]
     conversion = texture.get("conversion", {})
     fidelity = conversion.get("fidelity") or {}
@@ -211,6 +228,8 @@ def main() -> dict:
         "roundtrip_blend": results["ROUNDTRIP"]["blend"],
         "actions": results["ROUNDTRIP"]["facts"]["actions"],
         "preview_count": len(results["ROUNDTRIP"]["previews"]),
+        "contact_sheet": contact_sheet["path"],
+        "contact_sheet_layout": contact_sheet["layout_path"],
         "preview_foreground_min": min(foreground),
         "preview_foreground_max": max(foreground),
         "roundtrip_view_axis": results["ROUNDTRIP"]["bounds"]["view_axis"],

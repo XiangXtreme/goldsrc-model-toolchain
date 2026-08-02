@@ -7,7 +7,7 @@ Use fixtures only after shared toolchain changes. Give each run a fresh artifact
 | Capability | Entry point | Required evidence |
 |---|---|---|
 | Clean Extension installation | `scripts/extension_smoke_test.py` | one namespaced module, Pillow, no UI/legacy dependency, unified errors |
-| Textured skeletal end to end | `scripts/extension_fixture.py` | all five public stages, MDL v10, Action readback, five-point playback-ready Blend |
+| Textured skeletal end to end | `scripts/extension_fixture.py` | all five public stages, MDL v10, Action readback, five-point `3x2` contact sheet, playback-ready Blend |
 | Bodygroup/skin/metadata | `scripts/extension_feature_fixture.py` | non-empty/blank choices, every skin family, controller, attachment, hitbox, special flags |
 | Adaptive rigid-body API | `scripts/extension_feature_fixture.py` | explicit world, settlement window, receiver bounds, no final kinematic body |
 | Matrix transfer regression | `scripts/blender_rigidbody_transfer_regression.py` | parent/rest-space evaluated vertex agreement |
@@ -50,6 +50,6 @@ Both scripts call `bpy.ops.goldsrc_toolchain.execute_stage`; they do not import 
 
 - A basic fixture proves animation; a controller fixture may use a static sequence when StudioMDL controller semantics suppress root position channels.
 - Compare structure and transforms, not byte-for-byte SMD or MDL identity.
-- Repeated readback must not append `.001` names.
+- Repeated readback must not append `.001` names or retain a stale contact sheet.
 - Every shared fix needs a unit test, Blender fixture assertion, or preserved independent stress-scene regression.
 - Do not rerun six expensive physics scenes when a source/input fingerprint proves the unchanged artifact is still valid; do rerun the affected stage and a forward independent scene after physics logic changes.

@@ -26,6 +26,7 @@ from .core.rigidbody_bake import (
 )
 from .core.stages import PUBLIC_STAGES, execute_stage
 from .core.textures import convert_to_indexed_bmp
+from .core.visual_evidence import create_labeled_contact_sheet
 
 
 def _guard(phase: str, code: str, function, *args, **kwargs):
@@ -50,13 +51,13 @@ class RuntimeAPI:
         compiler = Path(__file__).resolve().parent / "bin" / "windows-x64" / "studiomdl.exe"
         return {
             "id": "goldsrc_model_toolchain",
-            "version": "1.3.2",
+            "version": "1.3.3",
             "api_version": 1,
             "blender": "5.2.x",
             "platform": "windows-x64",
             "distribution": "public_github_release",
             "repository": "https://github.com/XiangXtreme/goldsrc-model-toolchain",
-            "release": "v1.3.2",
+            "release": "v1.3.3",
             "stages": list(PUBLIC_STAGES),
             "formats": {"smd": 1, "mdl": 10, "qc": True, "indexed_bmp": True},
             "roundtrip_parser": "SourceIO 5.5.4 derived GoldSrc-only reader",
@@ -87,6 +88,7 @@ class RuntimeAPI:
                 "preflight_object_bounds": True,
                 "high_quality_texture_quantization": "Pillow MEDIANCUT",
                 "texture_fidelity_report": True,
+                "labeled_visual_contact_sheets": True,
                 "profile_model_budgets": {
                     "compiled_vertices": 2048,
                     "compiled_normals": 2048,
@@ -168,6 +170,20 @@ class RuntimeAPI:
         return _guard(
             "TEXTURE", "compatibility.player_portrait", validate_player_portrait,
             path, remapped=bool(remapped),
+        )
+
+    def create_visual_contact_sheet(
+        self, items, destination, *, columns=3, title=None,
+        tile_width=384, tile_height=384,
+    ) -> dict:
+        destination = _guard(
+            "VISUAL", "artifacts.skill_root", ensure_outside_skill_tree,
+            destination, label="Contact sheet destination",
+        )
+        return _guard(
+            "VISUAL", "visual.contact_sheet", create_labeled_contact_sheet,
+            items, destination, columns=int(columns), title=title,
+            tile_width=int(tile_width), tile_height=int(tile_height),
         )
 
     def load_contract(self, path, *, artifacts_dir=None, require_files=False) -> dict:

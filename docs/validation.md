@@ -7,7 +7,7 @@ Keep each layer separate:
 1. Blender authoring state: objects, UVs, weights, normals, Actions, bake settings, and preview.
 2. Extension export: contract resolution and parsed SMD/QC artifacts.
 3. StudioMDL result: compiler identity, logs, MDL v10 binary structure, and texture flags.
-4. Independent round trip: reconstructed geometry, skin metadata, textures, Actions, and five-point renders.
+4. Independent round trip: reconstructed geometry, skin metadata, textures, Actions, five-point renders, and labeled contact sheets.
 5. Visual review: production-side and MDL-side images inspected by the agent.
 6. In-game validation: a separate claim, false unless the named game/mod was actually run.
 
@@ -27,7 +27,7 @@ Require three independent animation-transfer checks for rigid-body models:
 
 Compilation success, sequence FPS/frame counts, an unchanged `matrix_basis`, or a static readback cannot replace these checks. The independent SourceIO-derived reader must reconstruct embedded sequences as Actions; missing or unbindable Actions are regressions unless the contract names a separately proven external-sequence limitation.
 
-For animated round trips, bind each imported Action in turn and render start, quarter, middle, three-quarter, and end frames up to the bounded preview budget. Record Action, frame, path, image hash, model-region occupancy, and foreground luminance for each still. Warn when an Action has varying channels but all sampled render hashes are identical. Before saving `mdl_roundtrip.blend`, rebind the first Action and restore its start/range so viewport playback works immediately. Pixel metrics prove that evidence is present; the agent must still inspect the images for the requested visible result.
+For animated round trips, bind each imported Action in turn and render start, quarter, middle, three-quarter, and end frames up to the bounded preview budget. Record Action, frame, path, image hash, model-region occupancy, and foreground luminance for each still. Compose those stills as a labeled `3x2` contact sheet so sequence timing can be scanned without an unreadable ultra-wide image. Keep labels in a caption band outside the image area. Preserve every source PNG and a JSON layout sidecar; the contact sheet is an index, not a replacement for the source evidence. Warn when an Action has varying channels but all sampled render hashes are identical. Before saving `mdl_roundtrip.blend`, rebind the first Action and restore its start/range so viewport playback works immediately. Pixel metrics prove that evidence is present; the agent must still inspect the images for the requested visible result.
 
 Make the readback renderer own a deterministic World and lights instead of inheriting the author Blend environment. Scale light position and size with imported bounds, and scale AREA-light power linearly with the same extent so large GoldSrc-coordinate assets do not become black silhouettes or washed-out white shapes. Inspect color and surface detail in the actual five-point images; a non-empty PNG or changing hash is not brightness acceptance.
 
@@ -39,7 +39,7 @@ Require the intact assembly's initial audit separately from dynamic penetration:
 
 Run `scripts/extension_fixture.py` for a textured skeletal Action across all five public stages. Run `scripts/extension_feature_fixture.py` for non-empty bodygroups, blank choices, all skin families, controller, attachment, hitbox, special texture flags, and adaptive rigid-body settlement. Run `scripts/extension_smoke_test.py` from a clean ZIP installation to prove no legacy dependency or UI registration.
 
-Require round-trip Actions, five representative images, image variation for animated Actions, no `.001` names after repeated readback, and a saved Blend with the first Action bound at its start frame. Open the Blend and verify Space playback after any change to Action reconstruction.
+Require round-trip Actions, five representative images, one labeled contact sheet per Action, image variation for animated Actions, no `.001` names after repeated readback, and a saved Blend with the first Action bound at its start frame. Inspect the contact sheet first, then open any suspicious original frame at full resolution. Open the Blend and verify Space playback after any change to Action reconstruction.
 
 For Half-Life/Counter-Strike delivery, reject Sven-only limits or directives not supported by the target engine. Compare explicit MDL bbox/cbox fields with QC. Actual game loading remains a separate claim.
 

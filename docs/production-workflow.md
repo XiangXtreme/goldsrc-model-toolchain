@@ -8,7 +8,7 @@ Use two separate roots:
 - The delivery directory contains only the files explicitly requested by the user. Populate it after validation passes by copying from the internal artifact directory. Never point `spec.artifacts` at the delivery directory.
 - Scope searches and path resolution to the active artifact root, pipeline spec directory, canonical Skill source, and explicit user paths. Sibling Codex thread directories and archived runs are not reference implementations and must not be searched for reusable scene content during independent authoring or forward tests.
 
-Never place generated assets in the Skill folder. Do not create preview video by default; animated-model visual review uses bounded five-point stills plus sequence-table inspection. Include quarter-cycle frames because start/mid/end can all be the same neutral pose in a symmetric loop. If the request is only for one self-contained MDL, the delivery directory must contain that `.mdl` and nothing else.
+Never place generated assets in the Skill folder. Do not create preview video by default; animated-model visual review uses a labeled contact sheet for scanning, the bounded five-point stills for full-resolution evidence, and sequence-table inspection. Include quarter-cycle frames because start/mid/end can all be the same neutral pose in a symmetric loop. For physics, use event labels such as `INTACT`, `CONTACT`, `RESPONSE`, and `SETTLED` rather than implying equal time spacing. If the request is only for one self-contained MDL, the delivery directory must contain that `.mdl` and nothing else.
 
 ## Deterministic CLIs
 
