@@ -141,12 +141,26 @@ def _clip_polygon(polygon: list[SmdVertex], axis: int, boundary: float, keep_gre
         previous_inside = current_inside
     deduplicated: list[SmdVertex] = []
     for vertex in result:
-        if deduplicated and all(abs(a - b) <= 1.0e-10 for a, b in zip(deduplicated[-1].uv, vertex.uv)):
+        # UV islands may be stacked: equal UVs can still refer to different
+        # positions, normals, or seams. Only remove a truly duplicated corner.
+        if deduplicated and _same_vertex(deduplicated[-1], vertex):
             continue
         deduplicated.append(vertex)
-    if len(deduplicated) > 1 and all(abs(a - b) <= 1.0e-10 for a, b in zip(deduplicated[0].uv, deduplicated[-1].uv)):
+    if len(deduplicated) > 1 and _same_vertex(deduplicated[0], deduplicated[-1]):
         deduplicated.pop()
     return deduplicated
+
+
+def _same_vertex(left: SmdVertex, right: SmdVertex, tolerance: float = 1.0e-10) -> bool:
+    """Return whether two clipped corners are duplicates in all SMD data."""
+
+    return (
+        left.bone == right.bone
+        and left.links == right.links
+        and all(abs(a - b) <= tolerance for a, b in zip(left.position, right.position))
+        and all(abs(a - b) <= tolerance for a, b in zip(left.normal, right.normal))
+        and all(abs(a - b) <= tolerance for a, b in zip(left.uv, right.uv))
+    )
 
 
 def _cross(left: tuple[float, float, float], right: tuple[float, float, float]) -> tuple[float, float, float]:
@@ -163,6 +177,12 @@ def _sub(left: tuple[float, float, float], right: tuple[float, float, float]) ->
 
 def _dot(left: tuple[float, float, float], right: tuple[float, float, float]) -> float:
     return sum(a * b for a, b in zip(left, right))
+
+
+def _triangle_area(vertices: tuple[SmdVertex, SmdVertex, SmdVertex] | list[SmdVertex]) -> float:
+    first, second, third = (vertex.position for vertex in vertices)
+    cross = _cross(_sub(second, first), _sub(third, first))
+    return 0.5 * math.sqrt(_dot(cross, cross))
 
 
 def _remap_uv(vertex: SmdVertex, tile_x: int, tile_y: int, width: int, height: int, tile_size: int, uv_clamp_factor: float) -> SmdVertex:
@@ -210,6 +230,8 @@ def tile_smd_document(
             _sub(triangle.vertices[1].position, triangle.vertices[0].position),
             _sub(triangle.vertices[2].position, triangle.vertices[0].position),
         )
+        original_area = _triangle_area(triangle.vertices)
+        output_area = 0.0
         for tile_y in range(minimum_y, maximum_y + 1):
             for tile_x in range(minimum_x, maximum_x + 1):
                 width_uv = tile_size / width
@@ -234,7 +256,13 @@ def tile_smd_document(
                         candidate[1], candidate[2] = candidate[2], candidate[1]
                     if _dot(candidate_cross, candidate_cross) <= 1.0e-18:
                         continue
+                    output_area += _triangle_area(candidate)
                     output.append(SmdTriangle(material, tuple(candidate)))
+        if original_area > 1.0e-12 and abs(output_area - original_area) > max(1.0e-8, original_area * 1.0e-6):
+            raise LargeTextureError(
+                "large-texture clipping changed a triangle's 3D area; "
+                "check stacked UV corners and tile-boundary retriangulation"
+            )
     return LargeTextureResult(
         document=SmdDocument(document.path, list(document.bones), dict(document.frames), output),
         tiles=tuple(sorted(used_tiles)),

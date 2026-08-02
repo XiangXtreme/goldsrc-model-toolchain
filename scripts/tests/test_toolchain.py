@@ -462,6 +462,25 @@ class LargeTextureTests(unittest.TestCase):
         self.assertEqual(set(result.tiles), {tile_name("atlas.bmp", 0, 0), tile_name("atlas.bmp", 1, 0), tile_name("atlas.bmp", 0, 1)})
         self.assertTrue(all(0.0 < value < 1.0 for triangle in result.document.triangles for vertex in triangle.vertices for value in vertex.uv))
 
+    def test_large_atlas_preserves_stacked_uv_corners(self) -> None:
+        document = parse_smd(
+            'version 1\n'
+            'nodes\n0 "root" -1\nend\n'
+            'skeleton\ntime 0\n0 0 0 0 0 0 0\nend\n'
+            'triangles\n'
+            'atlas.bmp\n'
+            '0 0 0 0 0 0 1 0.25 0.25\n'
+            '0 1 0 0 0 0 1 0.25 0.25\n'
+            '0 0 1 0 0 0 1 0.25 0.25\n'
+            'end\n'
+        )
+        result = tile_smd_document(document, atlas_name="atlas.bmp", width=1024, height=1024)
+        self.assertEqual(result.output_triangles, 1)
+        self.assertEqual(
+            {vertex.position for vertex in result.document.triangles[0].vertices},
+            {(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)},
+        )
+
     def test_smd_budget_split_preserves_all_triangles(self) -> None:
         document = parse_smd(
             'version 1\n'
