@@ -46,6 +46,35 @@ def _evaluated_mesh_counts(obj: Any, bpy: Any) -> tuple[int, int, int]:
         evaluated.to_mesh_clear()
 
 
+def _bounds_facts(obj: Any) -> dict[str, Any]:
+    dimensions = getattr(obj, "dimensions", None)
+    corners = getattr(obj, "bound_box", None)
+    facts = {
+        "dimensions": [float(value) for value in dimensions] if dimensions is not None else None,
+        "local_bounds": None,
+        "world_bounds": None,
+    }
+    if not corners:
+        return facts
+    local = [tuple(float(value) for value in corner) for corner in corners]
+    facts["local_bounds"] = {
+        "min": [min(point[axis] for point in local) for axis in range(3)],
+        "max": [max(point[axis] for point in local) for axis in range(3)],
+    }
+    matrix = getattr(obj, "matrix_world", None)
+    if matrix is None:
+        world = local
+    else:
+        from mathutils import Vector
+
+        world = [tuple(float(value) for value in matrix @ Vector(point)) for point in local]
+    facts["world_bounds"] = {
+        "min": [min(point[axis] for point in world) for axis in range(3)],
+        "max": [max(point[axis] for point in world) for axis in range(3)],
+    }
+    return facts
+
+
 def inspect_scene(contract: dict[str, Any], *, bpy_module=None) -> dict[str, Any]:
     contract = validate_contract(contract)
     if bpy_module is None:
@@ -166,6 +195,7 @@ def inspect_scene(contract: dict[str, Any], *, bpy_module=None) -> dict[str, Any
             "materials": materials,
             "unweighted": unweighted,
             "multiweighted": multiweighted,
+            **_bounds_facts(obj),
         })
 
     armatures = [obj for obj in bpy.context.scene.objects if obj.type == "ARMATURE"]

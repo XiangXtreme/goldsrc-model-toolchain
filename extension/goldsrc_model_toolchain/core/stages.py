@@ -10,7 +10,7 @@ from .errors import ToolchainError
 from .mdl_v10 import compare_mdl_sequence_to_smd, inspect_mdl, validate_mdl_contract
 from .model_contract import ContractError, load_contract, write_qc
 from .paths import resolve_artifact_root, resolve_toolchain
-from .smd import animation_budget_hint, read_smd
+from .smd import animation_budget_hint, audit_loop_endpoint, read_smd
 
 
 PUBLIC_STAGES = ("PREFLIGHT", "EXPORT", "COMPILE", "INSPECT", "ROUNDTRIP")
@@ -49,10 +49,26 @@ def run_compile(contract_path: str | Path, artifacts_dir: str | Path) -> dict:
     compiler = resolve_toolchain().sven_studiomdl
     if compiler is None or not compiler.is_file():
         raise ToolchainError("COMPILE", "compile.compiler", "Sven StudioMDL is missing")
-    budgets = {
-        sequence["name"]: animation_budget_hint(read_smd(root / sequence["source"]))
+    animation_documents = {
+        sequence["name"]: read_smd(root / sequence["source"])
         for sequence in contract["sequences"]
     }
+    budgets = {
+        name: animation_budget_hint(document)
+        for name, document in animation_documents.items()
+    }
+    loop_endpoints = {}
+    for sequence in contract["sequences"]:
+        if not sequence.get("loop"):
+            continue
+        audit = audit_loop_endpoint(animation_documents[sequence["name"]])
+        loop_endpoints[sequence["name"]] = audit
+        if audit["status"] != "pass":
+            raise ToolchainError(
+                "COMPILE", "compile.loop_endpoint",
+                "Looped sequence must duplicate its first pose at the final SMD frame",
+                {"sequence": sequence["name"], "audit": audit},
+            )
     qc = write_qc(contract, root)
     try:
         completed = subprocess.run(
@@ -78,7 +94,7 @@ def run_compile(contract_path: str | Path, artifacts_dir: str | Path) -> dict:
         raise ToolchainError("COMPILE", "compile.contract", "Compiled MDL violates its contract", {"issues": issues})
     evidence = {
         "compiler": str(compiler), "mdl": str(mdl_path), "returncode": completed.returncode,
-        "animation_budget": budgets,
+        "animation_budget": budgets, "loop_endpoints": loop_endpoints,
     }
     return {
         "status": "pass",

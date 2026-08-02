@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from pathlib import Path
 
@@ -27,13 +28,17 @@ def _action(armature):
     strip = layer.strips.new()
     slot = action.slots.new("OBJECT", armature.name)
     bag = strip.channelbags.new(slot)
-    curve = bag.fcurves.new('pose.bones["root"].location', index=0)
+    armature.pose.bones["root"].rotation_mode = "XYZ"
+    curve = bag.fcurves.new('pose.bones["root"].rotation_euler', index=1)
     curve.keyframe_points.add(5)
-    for point, value in zip(curve.keyframe_points, (0.0, 0.3, 0.75, 0.3, 0.0)):
+    for point, value in zip(
+        curve.keyframe_points,
+        (0.0, math.pi / 2.0, math.pi, math.pi * 1.5, math.pi * 2.0),
+    ):
         point.co = (point.co.x, value)
     for index, point in enumerate(curve.keyframe_points):
         point.co.x = index
-        point.interpolation = "BEZIER"
+        point.interpolation = "LINEAR"
     curve.update()
     armature.animation_data_create()
     armature.animation_data.action = action
@@ -60,9 +65,16 @@ def _scene():
     _action(armature)
     mesh = bpy.data.meshes.new("fixture_MESH")
     mesh.from_pydata(
-        [(-0.5, -0.5, 0.0), (0.5, -0.5, 0.0), (0.5, 0.5, 0.0), (-0.5, 0.5, 0.0), (0.0, 0.0, 1.0)],
+        [
+            (-256.0, -32.0, -64.0), (256.0, -32.0, -64.0), (256.0, -32.0, 64.0), (-256.0, -32.0, 64.0),
+            (-256.0, 32.0, -64.0), (256.0, 32.0, -64.0), (256.0, 32.0, 64.0), (-256.0, 32.0, 64.0),
+        ],
         [],
-        [(0, 1, 4), (1, 2, 4), (2, 3, 4), (3, 0, 4), (0, 3, 2), (0, 2, 1)],
+        [
+            (0, 2, 1), (0, 3, 2), (4, 5, 6), (4, 6, 7),
+            (0, 1, 5), (0, 5, 4), (3, 7, 6), (3, 6, 2),
+            (0, 4, 7), (0, 7, 3), (1, 2, 6), (1, 6, 5),
+        ],
     )
     mesh.update()
     uv = mesh.uv_layers.new(name="UVMap")
@@ -116,12 +128,12 @@ def _contract() -> dict:
             "name": "idle", "source": "idle.smd", "action": "idle", "fps": 20,
             "frame": [0, 4], "loop": True, "events": [], "motion": [],
         }],
-        "hitboxes": [{"group": 0, "bone": "root", "min": [-1, -1, -0.1], "max": [1, 1, 1.2]}],
+        "hitboxes": [{"group": 0, "bone": "root", "min": [-256, -32, -64], "max": [256, 32, 64]}],
         "attachments": [],
         "controllers": [],
         "bounds": {
-            "bbox": {"min": [-1, -1, -0.1], "max": [2, 1, 1.2]},
-            "cbox": {"min": [-1, -1, -0.1], "max": [2, 1, 1.2]},
+            "bbox": {"min": [-300, -300, -300], "max": [300, 300, 300]},
+            "cbox": {"min": [-300, -300, -300], "max": [300, 300, 300]},
         },
         "acceptance": {
             "required_phases": ["preflight", "export", "compile_sven", "mdl_inspect", "sourceio_roundtrip"],
@@ -170,6 +182,15 @@ def main() -> dict:
     foreground = [preview["foreground_fraction"] for preview in results["ROUNDTRIP"]["previews"]]
     if not foreground or max(foreground) <= 0.0:
         raise RuntimeError(f"bright fixture texture is not visible in round-trip previews: {foreground}")
+    if results["ROUNDTRIP"]["bounds"]["view_axis"] != "X":
+        raise RuntimeError(f"thin-axis camera regression: {results['ROUNDTRIP']['bounds']}")
+    mesh_facts = results["PREFLIGHT"]["facts"]["meshes"]
+    dimensions = mesh_facts[0].get("dimensions") if mesh_facts else None
+    if not dimensions or any(
+        abs(actual - expected) > 0.00001
+        for actual, expected in zip(dimensions, [512.0, 64.0, 128.0])
+    ):
+        raise RuntimeError(f"preflight dimensions missing or incorrect: {mesh_facts}")
     summary = {
         "status": "pass",
         "stages": list(results),
@@ -179,6 +200,8 @@ def main() -> dict:
         "preview_count": len(results["ROUNDTRIP"]["previews"]),
         "preview_foreground_min": min(foreground),
         "preview_foreground_max": max(foreground),
+        "roundtrip_view_axis": results["ROUNDTRIP"]["bounds"]["view_axis"],
+        "preflight_dimensions": mesh_facts[0]["dimensions"],
         "repeat_roundtrip": "pass",
         "repeat_names": repeated_names,
     }

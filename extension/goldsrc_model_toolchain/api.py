@@ -50,13 +50,13 @@ class RuntimeAPI:
         compiler = Path(__file__).resolve().parent / "bin" / "windows-x64" / "studiomdl.exe"
         return {
             "id": "goldsrc_model_toolchain",
-            "version": "1.3.0",
+            "version": "1.3.1",
             "api_version": 1,
             "blender": "5.2.x",
             "platform": "windows-x64",
             "distribution": "public_github_release",
             "repository": "https://github.com/XiangXtreme/goldsrc-model-toolchain",
-            "release": "v1.3.0",
+            "release": "v1.3.1",
             "stages": list(PUBLIC_STAGES),
             "formats": {"smd": 1, "mdl": 10, "qc": True, "indexed_bmp": True},
             "roundtrip_parser": "SourceIO 5.5.4 derived GoldSrc-only reader",
@@ -80,6 +80,11 @@ class RuntimeAPI:
                 "smd_animation_binding": True,
                 "mdl_decompile": True,
                 "roundtrip_matrix_audit": True,
+                "smd_declaration_order_audit": True,
+                "loop_endpoint_validation": True,
+                "bounds_aware_roundtrip_camera": True,
+                "blank_preview_rejection": True,
+                "preflight_object_bounds": True,
                 "profile_model_budgets": {
                     "compiled_vertices": 2048,
                     "compiled_normals": 2048,

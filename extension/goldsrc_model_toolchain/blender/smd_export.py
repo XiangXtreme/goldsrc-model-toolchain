@@ -11,7 +11,7 @@ from mathutils import Matrix, Vector
 
 from ..core.errors import ToolchainError
 from ..core.model_contract import load_contract, write_qc
-from ..core.smd import animation_budget_hint, read_smd, validate_smd
+from ..core.smd import animation_budget_hint, audit_loop_endpoint, read_smd, validate_smd
 from ..core.textures import _write_indexed_bmp_from_rgba, validate_indexed_bmp
 
 
@@ -270,9 +270,17 @@ def _export_animation(path: Path, contract: dict, sequence: dict, armature) -> d
     issues = validate_smd(document, require_triangles=False)
     if issues:
         raise ToolchainError("EXPORT", "export.animation_validation", "Animation SMD failed validation", {"path": str(path), "issues": issues})
+    loop_endpoint = audit_loop_endpoint(document) if sequence.get("loop") else None
+    if loop_endpoint and loop_endpoint["status"] != "pass":
+        raise ToolchainError(
+            "EXPORT", "export.loop_endpoint",
+            "Looped sequence must duplicate its first pose at the final exported frame",
+            {"sequence": sequence["name"], "path": str(path), "audit": loop_endpoint},
+        )
     return {
         "path": str(path), "action": action.name, "frames": len(frames),
         "frame_range": [start, end], "budget": animation_budget_hint(document),
+        "loop_endpoint": loop_endpoint,
     }
 
 

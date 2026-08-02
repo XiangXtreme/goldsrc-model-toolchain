@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import struct
 import subprocess
 import sys
@@ -17,17 +18,25 @@ from PIL import Image
 SCRIPT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from goldsrc_toolchain.mdl_v10 import _decode_animation_value, inspect_mdl, validate_mdl_contract
+from goldsrc_toolchain.mdl_v10 import (
+    _decode_animation_value,
+    compare_mdl_sequence_to_smd,
+    inspect_mdl,
+    validate_mdl_contract,
+)
 from goldsrc_toolchain.model_contract import ContractError, effective_texture_modes, render_qc, validate_contract
 from goldsrc_toolchain.paths import ensure_outside_skill_tree, resolve_artifact_root
 from goldsrc_toolchain.smd import (
     SmdError,
+    audit_loop_endpoint,
     compiled_model_normal_count,
     compiled_model_vertex_count,
     geometry_budget,
     parse_smd,
     validate_smd,
 )
+from goldsrc_toolchain.transforms import euler_xyz_rotation_error
+from goldsrc_toolchain.visual_evidence import choose_front_axis, summarize_preview_visibility
 from goldsrc_toolchain.textures import (
     TextureError,
     _convert_with_blender_image,
@@ -401,6 +410,42 @@ class ContractTests(unittest.TestCase):
                         validate_contract(contract, artifact_dir=root, require_files=True)
 
 
+class AnimationEvidenceTests(unittest.TestCase):
+    def test_rotation_comparison_accepts_equivalent_xyz_euler_channels(self) -> None:
+        error = euler_xyz_rotation_error(
+            (0.2, math.pi / 2.0, 0.7),
+            (-0.5, math.pi / 2.0, 0.0),
+        )
+        self.assertLess(error, 0.000001)
+
+    def test_loop_endpoint_requires_first_pose_duplication(self) -> None:
+        matching = parse_smd(
+            'version 1\nnodes\n0 "root" -1\nend\nskeleton\n'
+            'time 7\n0 0 0 0 0 0 0\ntime 8\n0 0 0 0 6.283185 0 0\nend\n'
+        )
+        mismatched = parse_smd(
+            'version 1\nnodes\n0 "root" -1\nend\nskeleton\n'
+            'time 7\n0 0 0 0 0 0 0\ntime 8\n0 1 0 0 0 0 0\nend\n'
+        )
+        self.assertEqual(audit_loop_endpoint(matching)["status"], "pass")
+        audit = audit_loop_endpoint(mismatched)
+        self.assertEqual(audit["status"], "fail")
+        self.assertEqual([audit["first_frame"], audit["last_frame"]], [7, 8])
+        self.assertEqual(audit["worst_position"]["bone"], "root")
+
+    def test_readback_framing_uses_thinnest_axis_and_rejects_all_blank_previews(self) -> None:
+        framing = choose_front_axis((-32, -256, -64), (32, 256, 64))
+        self.assertEqual(framing["axis_name"], "X")
+        blank = summarize_preview_visibility([
+            {"foreground_fraction": 0.0}, {"foreground_fraction": 0.0},
+        ])
+        self.assertEqual(blank["status"], "fail")
+        visible = summarize_preview_visibility([
+            {"foreground_fraction": 0.0}, {"foreground_fraction": 0.125},
+        ])
+        self.assertEqual(visible["status"], "pass")
+
+
 class SmdTests(unittest.TestCase):
     def test_parses_reference_and_bounds(self) -> None:
         document = parse_smd(REFERENCE_SMD)
@@ -662,6 +707,62 @@ class CompilerIntegrationTests(unittest.TestCase):
             changed = copy.deepcopy(normalized)
             changed["bounds"]["bbox"]["max"][0] = 2
             self.assertTrue(any(item["code"] == "mdl.bbox" for item in validate_mdl_contract(inspection, changed)))
+
+    def test_animation_audit_uses_smd_declaration_order_for_nonzero_start_frame(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            contract = base_contract()
+            contract["sequences"][0].update(frame=[1, 2], loop=False)
+            animation = """version 1
+nodes
+0 "root" -1
+end
+skeleton
+time 1
+0 0 0 0 0 0 0
+time 2
+0 0.5 0 0 0.25 0 0
+end
+"""
+            (root / "reference.smd").write_text(REFERENCE_SMD, encoding="utf-8")
+            (root / "idle.smd").write_text(animation, encoding="utf-8")
+            source = root / "source.png"
+            Image.new("RGBA", (64, 64), (100, 120, 140, 255)).save(source)
+            convert_to_indexed_bmp(source, root / "base.bmp", width=64, height=64)
+            contract_path = root / "model_contract.json"
+            contract_path.write_text(json.dumps(contract), encoding="utf-8")
+            completed = subprocess.run(
+                [sys.executable, str(SCRIPT_DIR / "compile_model.py"), str(contract_path)],
+                capture_output=True, text=True, errors="replace", timeout=30,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+            audit = compare_mdl_sequence_to_smd(root / "unit_model.mdl", root / "idle.smd", "idle")
+            self.assertEqual(audit["status"], "pass", audit)
+            self.assertEqual(audit["frames_checked"], 2)
+
+    def test_compile_rejects_mismatched_loop_endpoint_before_studiomdl(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            contract = base_contract()
+            contract["sequences"][0]["frame"] = [0, 1]
+            animation = IDLE_SMD.replace(
+                "0 0 0 0 0 0 0\nend\n",
+                "0 0 0 0 0 0 0\ntime 1\n0 1 0 0 0 0 0\nend\n",
+            )
+            (root / "reference.smd").write_text(REFERENCE_SMD, encoding="utf-8")
+            (root / "idle.smd").write_text(animation, encoding="utf-8")
+            source = root / "source.png"
+            Image.new("RGBA", (64, 64), (100, 120, 140, 255)).save(source)
+            convert_to_indexed_bmp(source, root / "base.bmp", width=64, height=64)
+            contract_path = root / "model_contract.json"
+            contract_path.write_text(json.dumps(contract), encoding="utf-8")
+            completed = subprocess.run(
+                [sys.executable, str(SCRIPT_DIR / "compile_model.py"), str(contract_path)],
+                capture_output=True, text=True, errors="replace", timeout=30,
+            )
+            self.assertEqual(completed.returncode, 1, completed.stdout + completed.stderr)
+            report = json.loads((root / "compile_sven.json").read_text(encoding="utf-8"))
+            self.assertEqual(report["error"]["code"], "compile.loop_endpoint")
 
     def test_renamebone_canonicalizes_smd_and_compiled_bone_names(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -7,6 +7,8 @@ from math import atan2, cos, pi, sin, sqrt
 from pathlib import Path
 from typing import Iterable
 
+from .transforms import euler_xyz_rotation_error
+
 
 TEXTURE_FLAGS = {
     "flatshade": 0x0001,
@@ -258,12 +260,17 @@ def compare_mdl_sequence_to_smd(
         issues.append(
             f"compiled MDL frame count {decoded['frame_count']} differs from SMD {len(smd.frames)}"
         )
-    frame_count = min(decoded["frame_count"], len(smd.frames))
+    smd_frames = list(smd.frames.items())
+    frame_count = min(decoded["frame_count"], len(smd_frames))
     worst_position = {"error": 0.0, "frame": None, "bone": None}
-    worst_rotation = {"error": 0.0, "frame": None, "bone": None, "axis": None}
-    for frame in range(frame_count):
-        smd_poses = {pose.bone: pose for pose in smd.frames.get(frame, [])}
-        for compiled_pose in decoded["frames"][frame]:
+    worst_rotation = {
+        "error": 0.0, "frame": None, "compiled_frame": None,
+        "bone": None, "axis": None, "axis_channel_error": 0.0,
+    }
+    for compiled_frame in range(frame_count):
+        smd_frame, source_poses = smd_frames[compiled_frame]
+        smd_poses = {pose.bone: pose for pose in source_poses}
+        for compiled_pose in decoded["frames"][compiled_frame]:
             bone_name = compiled_pose["name"]
             bone_id = smd_bones.get(bone_name)
             if bone_id is None or bone_id not in smd_poses:
@@ -282,11 +289,27 @@ def compare_mdl_sequence_to_smd(
                 for left, right in zip(compiled_pose["position"], expected_position)
             ))
             if position_error > worst_position["error"]:
-                worst_position = {"error": position_error, "frame": frame, "bone": bone_name}
-            for axis, (left, right) in enumerate(zip(compiled_pose["rotation"], expected_rotation)):
-                angle_error = abs(atan2(sin(float(left) - float(right)), cos(float(left) - float(right))))
-                if angle_error > worst_rotation["error"]:
-                    worst_rotation = {"error": angle_error, "frame": frame, "bone": bone_name, "axis": axis}
+                worst_position = {
+                    "error": position_error,
+                    "frame": smd_frame,
+                    "compiled_frame": compiled_frame,
+                    "bone": bone_name,
+                }
+            axis_errors = [
+                abs(atan2(sin(float(left) - float(right)), cos(float(left) - float(right))))
+                for left, right in zip(compiled_pose["rotation"], expected_rotation)
+            ]
+            rotation_error = euler_xyz_rotation_error(compiled_pose["rotation"], expected_rotation)
+            if rotation_error > worst_rotation["error"]:
+                axis = max(range(3), key=axis_errors.__getitem__)
+                worst_rotation = {
+                    "error": rotation_error,
+                    "frame": smd_frame,
+                    "compiled_frame": compiled_frame,
+                    "bone": bone_name,
+                    "axis": axis,
+                    "axis_channel_error": axis_errors[axis],
+                }
     if worst_position["error"] > position_tolerance:
         issues.append(
             "compiled MDL position channels diverge from animation SMD: "
@@ -300,7 +323,7 @@ def compare_mdl_sequence_to_smd(
     return {
         "status": "pass" if not issues else "fail",
         "issues": list(dict.fromkeys(issues)),
-        "method": "MDL v10 mstudioanimvalue_t decode compared with source SMD local channels after StudioMDL root +90 degree convention and QC scale",
+        "method": "MDL v10 mstudioanimvalue_t decode compared in SMD declaration order; positions use local channels and rotations use local XYZ matrices after the StudioMDL root +90 degree convention and QC scale",
         "sequence": sequence_name,
         "frames_checked": frame_count,
         "position_tolerance": float(position_tolerance),

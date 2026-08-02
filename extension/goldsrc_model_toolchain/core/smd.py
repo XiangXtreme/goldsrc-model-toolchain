@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
+from .transforms import euler_xyz_rotation_error
+
 
 class SmdError(ValueError):
     """Raised when an SMD is structurally invalid or unsafe for GoldSrc."""
@@ -308,3 +310,64 @@ def validate_smd(
                 if linked_bone not in known:
                     errors.append(f"triangle {triangle_index} vertex {vertex_index} links missing bone {linked_bone}")
     return list(dict.fromkeys(errors))
+
+
+def audit_loop_endpoint(
+    document: SmdDocument,
+    *,
+    position_tolerance: float = 0.0001,
+    rotation_tolerance: float = 0.0001,
+) -> dict:
+    """Verify that a loop's final SMD pose duplicates its first pose."""
+
+    frames = list(document.frames.items())
+    if len(frames) < 2:
+        return {
+            "status": "pass",
+            "first_frame": frames[0][0] if frames else None,
+            "last_frame": frames[-1][0] if frames else None,
+            "frames_checked": len(frames),
+            "position_tolerance": float(position_tolerance),
+            "rotation_tolerance": float(rotation_tolerance),
+            "max_position_error": 0.0,
+            "max_rotation_error": 0.0,
+            "worst_position": None,
+            "worst_rotation": None,
+        }
+    (first_frame, first_poses), (last_frame, last_poses) = frames[0], frames[-1]
+    first_by_bone = {pose.bone: pose for pose in first_poses}
+    last_by_bone = {pose.bone: pose for pose in last_poses}
+    names = {bone.index: bone.name for bone in document.bones}
+    worst_position = {"error": 0.0, "bone": None}
+    worst_rotation = {"error": 0.0, "bone": None}
+    for bone_id in sorted(first_by_bone.keys() & last_by_bone.keys()):
+        first = first_by_bone[bone_id]
+        last = last_by_bone[bone_id]
+        position_error = sum(
+            (float(left) - float(right)) ** 2
+            for left, right in zip(first.position, last.position)
+        ) ** 0.5
+        rotation_error = euler_xyz_rotation_error(first.rotation, last.rotation)
+        if position_error > worst_position["error"]:
+            worst_position = {"error": position_error, "bone": names.get(bone_id, str(bone_id))}
+        if rotation_error > worst_rotation["error"]:
+            worst_rotation = {"error": rotation_error, "bone": names.get(bone_id, str(bone_id))}
+    status = "pass" if (
+        first_by_bone.keys() == last_by_bone.keys()
+        and worst_position["error"] <= position_tolerance
+        and worst_rotation["error"] <= rotation_tolerance
+    ) else "fail"
+    return {
+        "status": status,
+        "first_frame": first_frame,
+        "last_frame": last_frame,
+        "frames_checked": len(frames),
+        "position_tolerance": float(position_tolerance),
+        "rotation_tolerance": float(rotation_tolerance),
+        "max_position_error": float(worst_position["error"]),
+        "max_rotation_error": float(worst_rotation["error"]),
+        "worst_position": worst_position,
+        "worst_rotation": worst_rotation,
+        "first_bones": sorted(first_by_bone),
+        "last_bones": sorted(last_by_bone),
+    }

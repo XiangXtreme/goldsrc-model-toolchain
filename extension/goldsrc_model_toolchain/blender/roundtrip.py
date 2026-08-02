@@ -13,6 +13,7 @@ from mathutils import Vector
 from ..core.action_curves import representative_frame_samples
 from ..core.errors import ToolchainError
 from ..core.model_contract import load_contract
+from ..core.visual_evidence import choose_front_axis, summarize_preview_visibility
 from .action_import import local_pose_globals
 from .mdl_import import import_mdl
 
@@ -33,7 +34,7 @@ def _configure_render(objects):
     scene.render.resolution_y = 512
     scene.render.resolution_percentage = 100
     scene.render.image_settings.file_format = "PNG"
-    scene.render.film_transparent = False
+    scene.render.film_transparent = True
     world = bpy.data.worlds.get("GoldSrcRoundtripWorld")
     if world is None:
         world = bpy.data.worlds.new("GoldSrcRoundtripWorld")
@@ -42,35 +43,50 @@ def _configure_render(objects):
     nodes = world.node_tree.nodes
     nodes.clear()
     background = nodes.new("ShaderNodeBackground")
-    background.inputs["Color"].default_value = (0.010, 0.018, 0.030, 1.0)
-    background.inputs["Strength"].default_value = 0.4
+    background.inputs["Color"].default_value = (0.035, 0.035, 0.035, 1.0)
+    background.inputs["Strength"].default_value = 0.65
     output = nodes.new("ShaderNodeOutputWorld")
     world.node_tree.links.new(background.outputs["Background"], output.inputs["Surface"])
     minimum, maximum, center = _bounds(objects)
+    framing = choose_front_axis(minimum, maximum)
+    axis = framing["axis"]
+    spans = framing["spans"]
     extent = max((maximum - minimum).length, 0.25)
-    lighting_scale = max(extent, 1.0)
+    max_span = max(max(spans), 0.25)
+    projected_span = max(max(framing["projected_spans"]), 0.25)
+    view_direction = Vector(tuple(1.0 if index == axis else 0.0 for index in range(3)))
     camera_data = bpy.data.cameras.new("GoldSrcRoundtripCamera")
     camera = bpy.data.objects.new("GoldSrcRoundtripCamera", camera_data)
     scene.collection.objects.link(camera)
-    camera.location = center + Vector((extent * 1.25, -extent * 1.65, extent * 0.85))
+    camera.location = center + view_direction * max(max_span * 2.0, 1.0)
     camera.rotation_euler = (center - camera.location).to_track_quat("-Z", "Y").to_euler()
-    camera_data.lens = 52
+    camera_data.type = "ORTHO"
+    camera_data.ortho_scale = projected_span * 1.25
+    camera_data.clip_start = max(max_span * 0.0001, 0.01)
+    camera_data.clip_end = max(max_span * 4.0, 1000.0)
     scene.camera = camera
-    for name, offset, energy, size in (
-        ("GoldSrcKey", (1.1, -0.8, 1.4), 1000.0, 4.0),
-        ("GoldSrcFill", (-1.0, -0.3, 0.7), 550.0, 3.0),
+    up = Vector((0.0, 0.0, 1.0)) if axis != 2 else Vector((0.0, 1.0, 0.0))
+    side = up.cross(view_direction).normalized()
+    for name, direction, energy, angle in (
+        ("GoldSrcKey", view_direction + side * 0.65 + up * 0.85, 2.0, 0.45),
+        ("GoldSrcFill", view_direction - side * 0.75 + up * 0.25, 0.8, 0.7),
     ):
-        light_data = bpy.data.lights.new(name, "AREA")
-        light_data.energy = energy * lighting_scale
-        light_data.shape = "DISK"
-        light_data.size = size * lighting_scale
+        light_data = bpy.data.lights.new(name, "SUN")
+        light_data.energy = energy
+        light_data.angle = angle
         light = bpy.data.objects.new(name, light_data)
         scene.collection.objects.link(light)
-        light.location = center + Vector(offset) * extent
+        light.location = center + direction.normalized() * max(max_span * 2.0, 1.0)
         light.rotation_euler = (center - light.location).to_track_quat("-Z", "Y").to_euler()
     return {
         "minimum": list(minimum), "maximum": list(maximum), "center": list(center),
-        "extent": extent, "lighting_scale": lighting_scale,
+        "extent": extent,
+        "spans": spans,
+        "view_axis": framing["axis_name"],
+        "camera_type": camera_data.type,
+        "camera_location": list(camera.location),
+        "orthographic_scale": camera_data.ortho_scale,
+        "camera_clip": [camera_data.clip_start, camera_data.clip_end],
     }
 
 
@@ -83,14 +99,20 @@ def _render(path: Path) -> dict:
     try:
         pixels = list(image.pixels)
         rgb = [pixels[index:index + 3] for index in range(0, len(pixels), 4)]
+        alpha = pixels[3::4]
         luminance = [0.2126 * value[0] + 0.7152 * value[1] + 0.0722 * value[2] for value in rgb]
-        visible = sum(1 for value in luminance if value > 0.08)
+        visible_indices = [index for index, value in enumerate(alpha) if value > 0.001]
+        foreground_luminance = [luminance[index] for index in visible_indices]
         return {
             "path": str(path),
             "sha256": hashlib.sha256(data).hexdigest(),
             "bytes": len(data),
             "mean_luminance": round(sum(luminance) / max(1, len(luminance)), 6),
-            "foreground_fraction": round(visible / max(1, len(luminance)), 6),
+            "foreground_mean_luminance": round(
+                sum(foreground_luminance) / max(1, len(foreground_luminance)), 6,
+            ),
+            "foreground_pixels": len(visible_indices),
+            "foreground_fraction": round(len(visible_indices) / max(1, len(alpha)), 6),
         }
     finally:
         bpy.data.images.remove(image)
@@ -316,6 +338,13 @@ def run_roundtrip(contract_path: str | Path, artifacts_dir: str | Path) -> dict:
                 "ROUNDTRIP", "roundtrip.static_previews", "Animated Action produced identical five-point previews",
                 {"action": action.name, "samples": samples},
             )
+    preview_visibility = summarize_preview_visibility(previews)
+    if preview_visibility["status"] == "fail":
+        raise ToolchainError(
+            "ROUNDTRIP", "roundtrip.blank_previews",
+            "All generated MDL readback previews contain zero foreground pixels",
+            preview_visibility,
+        )
     first_action = imported["actions"][0] if imported["actions"] else None
     if first_action:
         _bind_action(imported["armature"], first_action)
@@ -335,6 +364,7 @@ def run_roundtrip(contract_path: str | Path, artifacts_dir: str | Path) -> dict:
         "action_matrix_audits": imported["action_matrix_audits"],
         "weighted_vertex_audit": weighted_vertex_audit,
         "preview_hashes": [preview["sha256"] for preview in previews],
+        "preview_visibility": preview_visibility,
         "playback": {
             "action": first_action.name if first_action else None,
             "frame_start": bpy.context.scene.frame_start,

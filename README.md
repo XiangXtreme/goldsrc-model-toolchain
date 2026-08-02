@@ -4,11 +4,11 @@ Public Blender 5.2 Extension and deterministic host tools for creating and valid
 
 The Extension provides GoldSrc SMD/QC import and export, indexed BMP conversion, Sven StudioMDL compilation, independent MDL v10 inspection and readback, rigid-body-to-bone baking helpers, and a background-only five-stage API. It registers no panel or menu. The official [ahujasid/blender-mcp](https://github.com/ahujasid/blender-mcp) remains an external dependency and is never bundled or modified.
 
-Version `1.3.0` adds explicit reference-rest Action binding, five-point bone/weighted-vertex audits, safe MDL v10 decompilation, and compiler-accurate per-submodel vertex and normal budgets. Multi-source blend sequence authoring remains an explicit limitation.
+Version `1.3.1` fixes nonzero SMD frame audits, compares compiled rotations as matrices, rejects mismatched loop endpoints and blank readback previews, selects the readback camera from model bounds, and records preflight dimensions. Multi-source blend sequence authoring remains an explicit limitation.
 
 ## Install
 
-Download `goldsrc_model_toolchain-1.3.0-windows-x64.zip` and its checksum from the [v1.3.0 release](https://github.com/XiangXtreme/goldsrc-model-toolchain/releases/tag/v1.3.0), verify SHA-256, then install the ZIP as a Blender Extension in the `user_default` repository.
+Download `goldsrc_model_toolchain-1.3.1-windows-x64.zip` and its checksum from the [v1.3.1 release](https://github.com/XiangXtreme/goldsrc-model-toolchain/releases/tag/v1.3.1), verify SHA-256, then install the ZIP as a Blender Extension in the `user_default` repository.
 
 Requirements:
 
@@ -44,8 +44,8 @@ Supported stages are `PREFLIGHT`, `EXPORT`, `COMPILE`, `INSPECT`, and `ROUNDTRIP
 ```powershell
 python -m unittest discover -s scripts/tests -v
 python scripts/audit_repository.py
-python scripts/build_extension.py --output <artifact-dir>/goldsrc_model_toolchain-1.3.0-windows-x64.zip
-python scripts/audit_release_archives.py <artifact-dir>/goldsrc_model_toolchain-1.3.0-windows-x64.zip
+python scripts/build_extension.py --output <artifact-dir>/goldsrc_model_toolchain-1.3.1-windows-x64.zip
+python scripts/audit_release_archives.py <artifact-dir>/goldsrc_model_toolchain-1.3.1-windows-x64.zip
 ```
 
 Generated assets and test artifacts must remain outside this repository.

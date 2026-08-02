@@ -37,6 +37,14 @@ def fake_scene(*, frame_current=0, action_bound=True):
         ),
         scale=(1.0, 1.0, 1.0),
         rotation_euler=(0.0, 0.0, 0.0),
+        dimensions=(2.0, 4.0, 6.0),
+        bound_box=[
+            (-1.0, -2.0, -3.0), (-1.0, -2.0, 3.0),
+            (-1.0, 2.0, -3.0), (-1.0, 2.0, 3.0),
+            (1.0, -2.0, -3.0), (1.0, -2.0, 3.0),
+            (1.0, 2.0, -3.0), (1.0, 2.0, 3.0),
+        ],
+        matrix_world=None,
         material_slots=[SimpleNamespace(material=material)],
         vertex_groups=[group],
     )
@@ -90,6 +98,13 @@ class BlenderPreflightTests(unittest.TestCase):
         self.assertIn("animation.playback_unbound", codes)
         self.assertIn("animation.playback_start", codes)
         self.assertFalse(report["facts"]["playback"]["ready"])
+
+    def test_reports_contract_object_dimensions_and_bounds(self) -> None:
+        report = inspect_scene(base_contract(), bpy_module=fake_scene())
+        mesh = report["facts"]["meshes"][0]
+        self.assertEqual(mesh["dimensions"], [2.0, 4.0, 6.0])
+        self.assertEqual(mesh["local_bounds"]["min"], [-1.0, -2.0, -3.0])
+        self.assertEqual(mesh["world_bounds"]["max"], [1.0, 2.0, 3.0])
 
 
 if __name__ == "__main__":

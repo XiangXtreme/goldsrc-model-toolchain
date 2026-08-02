@@ -17,7 +17,7 @@ class ExtensionArchitectureTests(unittest.TestCase):
     def test_manifest_has_one_internal_plugin_and_external_mcp(self) -> None:
         manifest = json.loads((REPO_ROOT / "tool-manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(set(manifest["bundles"]), {"goldsrc_model_toolchain"})
-        self.assertEqual(manifest["bundles"]["goldsrc_model_toolchain"]["version"], "1.3.0")
+        self.assertEqual(manifest["bundles"]["goldsrc_model_toolchain"]["version"], "1.3.1")
         self.assertFalse(manifest["external_tools"]["blender_mcp"]["managed_by_extension"])
         self.assertEqual(manifest["external_tools"]["blender_mcp"]["ownership"], "external")
 
@@ -30,6 +30,9 @@ class ExtensionArchitectureTests(unittest.TestCase):
         self.assertIn('"smd_animation_binding": True', source)
         self.assertIn('"mdl_decompile": True', source)
         self.assertIn('"roundtrip_matrix_audit": True', source)
+        self.assertIn('"loop_endpoint_validation": True', source)
+        self.assertIn('"bounds_aware_roundtrip_camera": True', source)
+        self.assertIn('"blank_preview_rejection": True', source)
         compiler = EXTENSION / "bin" / "windows-x64" / "studiomdl.exe"
         self.assertEqual(
             hashlib.sha256(compiler.read_bytes()).hexdigest(),
