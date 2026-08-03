@@ -1,0 +1,22 @@
+name: validate
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  skill:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: python -m unittest discover -s .github/tests -v
+      - run: python -c "import pathlib; root=pathlib.Path('.'); forbidden={'tools','work','artifacts','outputs','dist'}; assert not any((root/name).exists() for name in forbidden); assert list(root.rglob('SKILL.md')) == [root/'SKILL.md']"

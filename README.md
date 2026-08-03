@@ -1,10 +1,29 @@
-# GoldSrc Model Toolchain
+# GoldSrc Model Toolchain Workspace
 
-Public Blender 5.2 Extension and deterministic host tools for creating and validating GoldSrc MDL v10 models on Windows x64.
+Unified source workspace for the `build-goldsrc-models` Skill and its public Blender 5.2 Extension. The plugin and Skill remain separate runtime packages but share one compatibility contract, test suite, and local installation workflow.
+
+The public compatibility baseline is `v1.3.3`. The `main` branch may contain unreleased `1.4.0-dev` changes; use a tagged GitHub Release for reproducible installation and do not treat `main` as a release artifact.
+
+## Workspace Layout
+
+- `skill/build-goldsrc-models/`: Codex Skill source, references, and its release-pinned installer.
+- `plugin/goldsrc_model_toolchain/`: Blender Extension source and bundled GoldSrc runtime components.
+- `scripts/validate_workspace.py`: checks source layout and Skill/Extension compatibility.
+- `scripts/sync_install.py`: installs the local Skill and builds/installs the local Blender Extension.
+
+## Local Development
+
+```powershell
+python scripts/validate_workspace.py
+python scripts/sync_install.py --all --dry-run
+python scripts/sync_install.py --all
+```
+
+Use `--skill` or `--plugin` to deploy one component. Skill synchronization updates only files managed by this workspace. Plugin synchronization validates and builds the Extension ZIP before installing it into Blender's `user_default` repository.
 
 The Extension provides GoldSrc SMD/QC import and export, indexed BMP conversion, Sven StudioMDL compilation, independent MDL v10 inspection and readback, rigid-body-to-bone baking helpers, and a background-only five-stage API. It registers no panel or menu. The official [ahujasid/blender-mcp](https://github.com/ahujasid/blender-mcp) remains an external dependency and is never bundled or modified.
 
-Version `1.3.3` adds labeled `3x2` contact sheets for five-point Action readback while preserving every original still and its hash. The same Blender-independent compositor is available through the runtime API for author/readback comparisons and physics-event evidence. The current source also reports evaluated UV/material facts and propagates failed preflight evidence as `status: fail`. Multi-source blend sequence authoring remains an explicit limitation.
+Release `v1.3.3` adds labeled `3x2` contact sheets for five-point Action readback while preserving every original still and its hash. The same Blender-independent compositor is available through the runtime API for author/readback comparisons and physics-event evidence. The development branch also reports evaluated UV/material facts and propagates failed preflight evidence as `status: fail`. Multi-source blend sequence authoring remains an explicit limitation.
 
 The current source also supports logical large textures and over-budget reference SMDs. A logical `2048x2048` atlas is exported as sixteen `512x512` indexed BMPs inside one MDL; EXPORT clips and retriangulates triangles crossing tile boundaries, then remaps each triangle to local tile UVs. GoldSrc does not receive a `2048x2048` texture entry. Reference SMDs are split by compiled `(bone, position)`, `(bone, normal)`, and triangle budgets into multiple `$body` entries. Bodygroup choices are rejected when they need splitting. Simple line slicers such as `smdcutpy.py` are not a substitute for this path.
 
@@ -59,4 +78,4 @@ Generated assets and test artifacts must remain outside this repository.
 
 ## Licensing And Provenance
 
-Project code is GPL-2.0-or-later. SourceIO-derived code retains its MIT notice, Pillow retains HPND terms, and Blender Source Tools-derived SMD behavior retains GPL attribution. The bundled `studiomdl.exe` is the recorded Sven Co-op SDK modelling tool snapshot; component notices and hashes are under `extension/goldsrc_model_toolchain/licenses/` and `tool-manifest.json`.
+Project code is GPL-2.0-or-later. SourceIO-derived code retains its MIT notice, Pillow retains HPND terms, and Blender Source Tools-derived SMD behavior retains GPL attribution. The bundled `studiomdl.exe` is the recorded Sven Co-op SDK modelling tool snapshot; component notices and hashes are under `plugin/goldsrc_model_toolchain/licenses/` and `tool-manifest.json`.

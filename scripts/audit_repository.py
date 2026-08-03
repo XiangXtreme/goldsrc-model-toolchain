@@ -9,15 +9,20 @@ import hashlib
 import json
 import re
 import sys
+import tomllib
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-EXTENSION_ROOT = Path("extension/goldsrc_model_toolchain")
+SKILL_ROOT = Path("skill/build-goldsrc-models")
+SKILL_MANIFEST = SKILL_ROOT / "SKILL.md"
+EXTENSION_ROOT = Path("plugin/goldsrc_model_toolchain")
 REQUIRED_FILES = {
     Path("LICENSE"),
     Path("README.md"),
     Path("tool-manifest.json"),
+    Path("workspace-manifest.json"),
+    SKILL_MANIFEST,
     EXTENSION_ROOT / "blender_manifest.toml",
     EXTENSION_ROOT / "api.py",
     EXTENSION_ROOT / "operator.py",
@@ -86,8 +91,18 @@ def audit(root: Path = REPO_ROOT) -> dict:
             errors.append(f"symlink is not portable: {relative.as_posix()}")
         if set(relative.parts) & FORBIDDEN_PARTS or path.suffix.lower() in {".pyc", ".pyo"}:
             errors.append(f"generated cache is forbidden: {relative.as_posix()}")
-        if path.is_file() and path.name == "SKILL.md":
-            errors.append(f"tool repository must not contain a Skill manifest: {relative.as_posix()}")
+        if path.is_file() and path.name == "SKILL.md" and relative != SKILL_MANIFEST:
+            errors.append(f"unexpected Skill manifest: {relative.as_posix()}")
+    skill_manifests = sorted(
+        path.relative_to(root).as_posix()
+        for path in root.rglob("SKILL.md")
+        if path.is_file()
+    )
+    if skill_manifests != [SKILL_MANIFEST.as_posix()]:
+        errors.append(
+            "workspace must contain exactly one Skill manifest at "
+            f"{SKILL_MANIFEST.as_posix()}: {skill_manifests}"
+        )
     for required in sorted(REQUIRED_FILES):
         if required not in relative_files:
             errors.append(f"missing required file: {required.as_posix()}")
@@ -122,11 +137,22 @@ def audit(root: Path = REPO_ROOT) -> dict:
         manifest = {}
         errors.append(f"cannot read tool manifest: {exc}")
     bundle = manifest.get("bundles", {}).get("goldsrc_model_toolchain", {})
+    extension_manifest_path = root / EXTENSION_ROOT / "blender_manifest.toml"
+    try:
+        extension_manifest = tomllib.loads(extension_manifest_path.read_text(encoding="utf-8"))
+        extension_version = extension_manifest.get("version")
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        extension_version = None
+        errors.append(f"cannot read Extension manifest: {exc}")
     digest, count, byte_count = tree_digest(extension) if extension.is_dir() else ("", 0, 0)
     if manifest.get("distribution") != "public_github_release":
         errors.append("manifest distribution must be public_github_release")
-    if bundle.get("root") != EXTENSION_ROOT.as_posix() or bundle.get("version") != "1.3.3":
-        errors.append("manifest bundle path/version does not match Extension 1.3.3")
+    if bundle.get("root") != EXTENSION_ROOT.as_posix():
+        errors.append("manifest bundle path does not match the Extension source")
+    if bundle.get("version") != extension_version:
+        errors.append(
+            f"manifest bundle version {bundle.get('version')!r} does not match Extension {extension_version!r}"
+        )
     if (bundle.get("sha256_tree"), bundle.get("files"), bundle.get("bytes")) != (digest, count, byte_count):
         errors.append("manifest Extension tree integrity does not match repository contents")
     mcp = manifest.get("external_tools", {}).get("blender_mcp", {})
@@ -136,6 +162,7 @@ def audit(root: Path = REPO_ROOT) -> dict:
         "status": "pass" if not errors else "fail",
         "repository": "goldsrc-model-toolchain",
         "files": len(files),
+        "skill": {"root": SKILL_ROOT.as_posix(), "manifests": skill_manifests},
         "extension": {"files": count, "bytes": byte_count, "sha256_tree": digest},
         "errors": errors,
     }

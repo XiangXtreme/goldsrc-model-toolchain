@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-EXTENSION = REPO_ROOT / "extension" / "goldsrc_model_toolchain"
+EXTENSION = REPO_ROOT / "plugin" / "goldsrc_model_toolchain"
 
 
 class ExtensionArchitectureTests(unittest.TestCase):
@@ -63,9 +63,9 @@ class ExtensionArchitectureTests(unittest.TestCase):
                     text = path.read_text(encoding="utf-8")
                     self.assertFalse([token for token in forbidden_text if token in text])
 
-    def test_tool_repository_contains_no_skill_manifest(self) -> None:
+    def test_workspace_contains_one_skill_manifest(self) -> None:
         manifests = sorted(path.relative_to(REPO_ROOT).as_posix() for path in REPO_ROOT.rglob("SKILL.md"))
-        self.assertEqual(manifests, [])
+        self.assertEqual(manifests, ["skill/build-goldsrc-models/SKILL.md"])
 
     def test_stage_operator_surface_is_fixed(self) -> None:
         source = (EXTENSION / "core" / "stages.py").read_text(encoding="utf-8")

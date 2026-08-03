@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+/.claude/
+/tools/
+/work/
+/artifacts/
+/outputs/
+/dist/
+*.blend1
+*.zip
+*.zip.sha256

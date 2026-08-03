@@ -1,0 +1,4 @@
+interface:
+  display_name: "Build GoldSrc Models"
+  short_description: "Creative Blender workflows for GoldSrc MDL models"
+  default_prompt: "Use $build-goldsrc-models to choose the right Blender workflow, avoid known GoldSrc pitfalls, and deliver the requested validated MDL."

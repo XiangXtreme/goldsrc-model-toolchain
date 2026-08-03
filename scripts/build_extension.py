@@ -11,10 +11,11 @@ import sys
 from pathlib import Path
 
 from goldsrc_toolchain.paths import ensure_outside_skill_tree, resolve_toolchain
+from release_metadata import plugin_version
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SOURCE = REPO_ROOT / "extension" / "goldsrc_model_toolchain"
+SOURCE = REPO_ROOT / "plugin" / "goldsrc_model_toolchain"
 
 
 def build(output: Path, *, blender: Path | None = None) -> dict:
@@ -40,6 +41,7 @@ def build(output: Path, *, blender: Path | None = None) -> dict:
         raise RuntimeError(f"Extension build failed:\n{built.stdout}\n{built.stderr}")
     return {
         "status": "pass", "source": str(SOURCE), "archive": str(output),
+        "version": plugin_version(),
         "bytes": output.stat().st_size,
         "sha256": hashlib.sha256(output.read_bytes()).hexdigest(),
         "validate_stdout": validate.stdout[-4000:],

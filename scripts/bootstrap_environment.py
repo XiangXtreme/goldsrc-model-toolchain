@@ -17,12 +17,13 @@ from pathlib import Path
 
 from build_extension import build as build_extension
 from goldsrc_toolchain.paths import resolve_toolchain
+from release_metadata import extension_archive_name
 
 
 SCRIPTS = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPTS.parent
 MANIFEST_PATH = REPO_ROOT / "tool-manifest.json"
-EXTENSION_SOURCE = REPO_ROOT / "extension" / "goldsrc_model_toolchain"
+EXTENSION_SOURCE = REPO_ROOT / "plugin" / "goldsrc_model_toolchain"
 EXTENSION_ID = "goldsrc_model_toolchain"
 MCP_SERVER_BASELINE = "blender-mcp==1.6.0"
 MCP_PROTOCOL_BASELINE = "mcp==1.29.0"
@@ -108,7 +109,8 @@ def _repository_layout_fact() -> dict:
         name for name in ("artifacts", "dist", "outputs", "work")
         if (REPO_ROOT / name).exists()
     ]
-    valid = not manifests and not runtime_directories
+    expected = "skill/build-goldsrc-models/SKILL.md"
+    valid = manifests == [expected] and not runtime_directories
     return {
         "valid": valid,
         "skill_manifests": manifests,
@@ -329,7 +331,7 @@ def main() -> int:
         raise RuntimeError("Configure the official blender-mcp service externally before bootstrap")
     blender = Path(before["blender"]["path"])
     with tempfile.TemporaryDirectory(prefix="goldsrc_extension_build_") as temporary:
-        archive = Path(temporary) / "goldsrc_model_toolchain-1.3.3-windows-x64.zip"
+        archive = Path(temporary) / extension_archive_name()
         build_report = build_extension(archive, blender=blender)
         installed = _install_extension(blender, archive)
     configured = _configure_blender(blender)

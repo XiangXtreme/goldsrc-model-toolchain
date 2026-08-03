@@ -22,7 +22,7 @@ from goldsrc_toolchain.paths import resolve_artifact_root
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TOOLCHAIN_INPUTS = (
     Path(__file__).resolve().parent / "goldsrc_toolchain",
-    REPO_ROOT / "extension" / "goldsrc_model_toolchain",
+    REPO_ROOT / "plugin" / "goldsrc_model_toolchain",
     REPO_ROOT / "tool-manifest.json",
 )
 

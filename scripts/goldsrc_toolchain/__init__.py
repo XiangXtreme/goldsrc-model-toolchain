@@ -9,7 +9,7 @@ from pathlib import Path
 
 _CORE = (
     Path(__file__).resolve().parents[2]
-    / "extension"
+    / "plugin"
     / "goldsrc_model_toolchain"
     / "core"
 )

@@ -158,7 +158,11 @@ class ArtifactIsolationTests(unittest.TestCase):
     def test_current_repository_layout_is_discovery_safe(self) -> None:
         self.assertEqual(
             _repository_layout_fact(),
-            {"valid": True, "skill_manifests": [], "runtime_directories": []},
+            {
+                "valid": True,
+                "skill_manifests": ["skill/build-goldsrc-models/SKILL.md"],
+                "runtime_directories": [],
+            },
         )
 
 

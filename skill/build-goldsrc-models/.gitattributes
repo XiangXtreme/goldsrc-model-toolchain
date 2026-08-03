@@ -1,0 +1,22 @@
+* text=auto
+
+.gitattributes text eol=lf
+.gitignore text eol=lf
+LICENSE text eol=lf
+COPYING text eol=lf
+*.md text eol=lf
+*.py text eol=lf
+*.json text eol=lf
+*.toml text eol=lf
+*.txt text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+
+*.blend binary
+*.bmp binary
+*.dll binary
+*.exe binary
+*.mdl binary
+*.png binary
+*.pyd binary
+*.zip binary
