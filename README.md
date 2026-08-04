@@ -2,7 +2,7 @@
 
 Unified source workspace for the `build-goldsrc-models` Skill and its public Blender 5.2 Extension. The plugin and Skill remain separate runtime packages but share one compatibility contract, test suite, and local installation workflow.
 
-The current source, local sync installation, and public compatibility baseline are `1.4.1 / API 1`. Reproducible public installation is pinned to GitHub Release `v1.4.1`.
+The authoritative Extension version lives only in `plugin/goldsrc_model_toolchain/blender_manifest.toml`. Runtime capabilities, release tags, asset names, and download URLs derive from it. The standalone Skill keeps only the pinned version and release ZIP SHA-256 required for reproducible installation.
 
 ## Workspace Layout
 
@@ -23,7 +23,7 @@ Use `--skill` or `--plugin` to deploy one component. Skill synchronization updat
 
 The Extension provides GoldSrc SMD/QC import and export, indexed BMP conversion, Sven StudioMDL compilation, independent MDL v10 inspection and readback, rigid-body-to-bone baking helpers, and a background-only five-stage API. It registers no panel or menu. The official [ahujasid/blender-mcp](https://github.com/ahujasid/blender-mcp) remains an external dependency and is never bundled or modified.
 
-Release `v1.4.1` contains the selected-static workflow introduced in `v1.4.0` and normalizes artifact roots before export-plan containment checks, including Windows temporary-directory aliases used by CI. The release provides compact persisted reports, isolated strict roundtrips, unified visual comparison, sparse 2K texture tiling, explicit triangle summaries, and source-evaluated to prepared to logical-SMD material-distribution auditing. Multi-source blend sequence authoring remains an explicit limitation.
+The `1.4` release line productizes selected-static export as one high-level call while retaining the five-stage validation boundary. It provides compact persisted reports, isolated strict roundtrips, unified visual comparison, sparse 2K texture tiling, explicit triangle summaries, source-evaluated to prepared to logical-SMD material-distribution auditing, and normalized Windows artifact-root checks. Multi-source blend sequence authoring remains an explicit limitation.
 
 The release supports logical large textures and over-budget reference SMDs. A logical `2048x2048` atlas defines sixteen possible `512x512` tiles; EXPORT clips and retriangulates triangles crossing tile boundaries, remaps local UVs, and export-plan version 2 converts/compiles only geometry- or skin-referenced tiles. GoldSrc does not receive a `2048x2048` texture entry, and hidden anchor geometry is unnecessary. Reference SMDs are split by compiled `(bone, position)`, `(bone, normal)`, and triangle budgets into multiple `$body` entries. Bodygroup choices are rejected when they need splitting. Simple line slicers such as `smdcutpy.py` are not a substitute for this path.
 
@@ -31,7 +31,7 @@ For author-baked procedural/PBR colors, a contract can declare `texture_bake.uv_
 
 ## Install
 
-Download `goldsrc_model_toolchain-1.4.1-windows-x64.zip` and its checksum from the [v1.4.1 release](https://github.com/XiangXtreme/goldsrc-model-toolchain/releases/tag/v1.4.1), verify SHA-256, then install the ZIP as a Blender Extension in the `user_default` repository.
+Download the versioned `goldsrc_model_toolchain-<version>-windows-x64.zip` and its checksum from the [latest release](https://github.com/XiangXtreme/goldsrc-model-toolchain/releases/latest), verify SHA-256, then install the ZIP as a Blender Extension in the `user_default` repository.
 
 Requirements:
 
@@ -41,7 +41,7 @@ Requirements:
 
 ## Runtime API
 
-Release `1.4.1` provides one compact product entry for an ordinary selected static mesh while keeping API version 1 and the old three-argument `execute_stage()` full-result default:
+The current API provides one compact product entry for an ordinary selected static mesh while keeping API version 1 and the old three-argument `execute_stage()` full-result default:
 
 ```python
 api = bpy.app.driver_namespace["goldsrc_model_toolchain"]
@@ -95,15 +95,18 @@ Supported stages are `PREFLIGHT`, `EXPORT`, `COMPILE`, `INSPECT`, and `ROUNDTRIP
 - `plugin/goldsrc_model_toolchain/` is the only Blender Extension payload. Blender Extensions use Blender's Python API, so runtime `.py` modules such as `blender/static_export.py` are expected source files, not generated scripts. The static module is asset-agnostic and contains no cave- or fixture-specific behavior.
 - `skill/build-goldsrc-models/` is the only Codex Skill source.
 - `scripts/` contains workspace validation, build/install commands, compatibility CLIs, and regression fixtures. It is never copied into the Extension ZIP or imported by the installed runtime. See `scripts/README.md`.
-- `workspace-manifest.json` binds the current `1.4.1 / API 1` components to the public `v1.4.1` compatibility pin.
+- `workspace-manifest.json` binds stable component locations and API compatibility without duplicating the Extension version.
 
 ## Development Commands
 
 ```powershell
 python -m unittest discover -s scripts/tests -v
 python scripts/audit_repository.py
-python scripts/build_extension.py --output <artifact-dir>/goldsrc_model_toolchain-1.4.1-windows-x64.zip
+python scripts/build_extension.py --output-dir <artifact-dir>
+python scripts/prepare_release.py <version> --output-dir <artifact-dir>
 ```
+
+`prepare_release.py` is the only version-bump entry point. It changes the Extension manifest and minimal Skill pin, builds the version-derived ZIP/checksum outside the repository, and rolls source files back if any step fails. Tests and documentation read or describe derived identity rather than embedding the current version.
 
 Generated assets and test artifacts must remain outside this repository.
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import re
 import tempfile
 import unittest
@@ -15,41 +16,48 @@ SPEC.loader.exec_module(INSTALLER)
 
 
 class InstallerTests(unittest.TestCase):
-    def test_release_manifest_is_pinned_to_public_v141(self) -> None:
+    def test_release_manifest_stores_one_version_and_derives_coordinates(self) -> None:
+        raw = json.loads((ROOT / "scripts" / "toolchain-release.json").read_text(encoding="utf-8"))
         release = INSTALLER.load_release()
         self.assertEqual(release["repository"], "https://github.com/XiangXtreme/goldsrc-model-toolchain")
-        self.assertEqual(release["tag"], "v1.4.1")
-        self.assertEqual(release["asset"], "goldsrc_model_toolchain-1.4.1-windows-x64.zip")
-        self.assertEqual(release["sha256"], "3260492af90420b730b353b8c6dcc95d74afea0a83c1ba3dbae0b98280ea39ce")
+        self.assertEqual(raw["schema_version"], 2)
+        self.assertFalse({"tag", "asset", "download_url"} & raw.keys())
+        self.assertEqual(release["tag"], f"v{release['version']}")
+        self.assertEqual(
+            release["asset"],
+            f"goldsrc_model_toolchain-{release['version']}-{release['platform']}.zip",
+        )
+        self.assertTrue(release["download_url"].endswith(f"/{release['tag']}/{release['asset']}"))
+        self.assertEqual(release["sha256"], raw["sha256"])
         self.assertEqual(release["api_version"], 1)
         self.assertRegex(release["sha256"], r"^[0-9a-f]{64}$")
 
     def test_version_routing_never_downgrades_newer_api_one(self) -> None:
         release = INSTALLER.load_release()
+        major, minor, patch = (int(part) for part in release["version"].split("."))
+        if patch:
+            older = f"{major}.{minor}.{patch - 1}"
+        elif minor:
+            older = f"{major}.{minor - 1}.999"
+        else:
+            older = f"{max(0, major - 1)}.999.999"
+        newer = f"{major}.{minor}.{patch + 1}"
         self.assertEqual(INSTALLER.version_compatibility(None, release), "missing")
         self.assertEqual(
-            INSTALLER.version_compatibility({"id": "goldsrc_model_toolchain", "version": "1.3.3", "api_version": 1}, release),
+            INSTALLER.version_compatibility({"id": "goldsrc_model_toolchain", "version": older, "api_version": 1}, release),
             "upgrade_required",
         )
         self.assertEqual(
-            INSTALLER.version_compatibility({"id": "goldsrc_model_toolchain", "version": "1.4.0", "api_version": 1}, release),
+            INSTALLER.version_compatibility({"id": "goldsrc_model_toolchain", "version": f"{release['version']}-dev", "api_version": 1}, release),
             "upgrade_required",
         )
         self.assertEqual(
-            INSTALLER.version_compatibility({"id": "goldsrc_model_toolchain", "version": "1.4.0-dev", "api_version": 1}, release),
-            "upgrade_required",
-        )
-        self.assertEqual(
-            INSTALLER.version_compatibility({"id": "goldsrc_model_toolchain", "version": "1.4.1", "api_version": 1}, release),
+            INSTALLER.version_compatibility({"id": "goldsrc_model_toolchain", "version": release["version"], "api_version": 1}, release),
             "validated",
         )
         self.assertEqual(
-            INSTALLER.version_compatibility({"id": "goldsrc_model_toolchain", "version": "1.4.2", "api_version": 1}, release),
+            INSTALLER.version_compatibility({"id": "goldsrc_model_toolchain", "version": newer, "api_version": 1}, release),
             "compatible_unregressed_version",
-        )
-        self.assertEqual(
-            INSTALLER.version_compatibility({"id": "goldsrc_model_toolchain", "version": "1.3.1", "api_version": 1}, release),
-            "upgrade_required",
         )
 
     def test_archive_hash_is_enforced(self) -> None:

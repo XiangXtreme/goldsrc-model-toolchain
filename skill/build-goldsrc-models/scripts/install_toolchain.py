@@ -17,20 +17,38 @@ from pathlib import Path
 
 MANIFEST_PATH = Path(__file__).with_name("toolchain-release.json")
 STATE_MARKER = "GOLDSRC_TOOLCHAIN_STATE="
+SEMVER = re.compile(
+    r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
+    r"(?:-(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)"
+    r"(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*)?"
+    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+)
 
 
 def load_release() -> dict:
     value = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
     required = {
-        "repository", "tag", "asset", "download_url", "sha256",
+        "repository", "sha256",
         "extension_id", "version", "api_version", "blender", "platform",
     }
     missing = sorted(required - value.keys())
-    if value.get("schema_version") != 1 or missing:
+    if value.get("schema_version") != 2 or missing:
         raise ValueError(f"invalid toolchain release manifest; missing={missing}")
+    duplicated = sorted({"tag", "asset", "download_url"} & value.keys())
+    if duplicated:
+        raise ValueError(f"derived release fields must not be stored: {duplicated}")
+    if not isinstance(value["version"], str) or not SEMVER.fullmatch(value["version"]):
+        raise ValueError(f"invalid toolchain release version: {value['version']!r}")
     if not re.fullmatch(r"[0-9a-f]{64}", value["sha256"]):
         raise ValueError("toolchain release SHA-256 must be 64 lowercase hex characters")
-    return value
+    tag = f"v{value['version']}"
+    asset = f"goldsrc_model_toolchain-{value['version']}-{value['platform']}.zip"
+    return {
+        **value,
+        "tag": tag,
+        "asset": asset,
+        "download_url": f"{value['repository'].rstrip('/')}/releases/download/{tag}/{asset}",
+    }
 
 
 def _blender_candidates(explicit: Path | None) -> list[Path]:

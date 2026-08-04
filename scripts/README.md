@@ -4,7 +4,7 @@ This directory is repository tooling, not Blender Extension source. The Extensio
 
 The Python files have four roles:
 
-- Validation and release checks: `validate_workspace.py`, `audit_repository.py`, `audit_release_archives.py`, and `build_extension.py`.
+- Validation and release checks: `validate_workspace.py`, `audit_repository.py`, `audit_release_archives.py`, `build_extension.py`, and the single-entry `prepare_release.py` version workflow.
 - Local environment and installation: `bootstrap_environment.py`, `check_environment.py`, `configure_blender_addons.py`, `resolve_toolchain.py`, and `sync_install.py`.
 - Regression fixtures and smoke tests: files ending in `_fixture.py`, `_regression.py`, or `_smoke_test.py`, plus `tests/`.
 - Manual API-1 compatibility CLIs: the remaining export, compile, inspect, contract, and round-trip commands. The installed Extension does not call them; the normal selected-static route is `api.export_selected_static(...)`.

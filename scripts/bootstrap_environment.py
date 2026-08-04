@@ -13,11 +13,12 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 from pathlib import Path
 
 from build_extension import build as build_extension
 from goldsrc_toolchain.paths import resolve_toolchain
-from release_metadata import extension_archive_name
+from release_metadata import extension_archive_name, load_plugin_manifest
 
 
 SCRIPTS = Path(__file__).resolve().parent
@@ -82,11 +83,16 @@ def verify_bundles() -> dict:
     expected = manifest.get("bundles", {}).get("goldsrc_model_toolchain", {})
     root = REPO_ROOT / expected.get("root", "missing")
     digest, files, byte_count = _tree_digest(root)
+    try:
+        extension_manifest = load_plugin_manifest()
+    except ValueError:
+        extension_manifest = {}
     bundle = {
-        "root": str(root), "exists": root.is_dir(), "version": expected.get("version"),
+        "root": str(root), "exists": root.is_dir(), "version": extension_manifest.get("version"),
         "files": files, "bytes": byte_count, "sha256_tree": digest,
-        "valid": digest == expected.get("sha256_tree")
-        and files == expected.get("files") and byte_count == expected.get("bytes"),
+        "valid": root.is_dir()
+        and extension_manifest.get("id") == EXTENSION_ID
+        and expected.get("version_source") == "blender_manifest.toml",
     }
     critical = {}
     for relative, facts in manifest.get("critical_files", {}).items():
@@ -195,10 +201,24 @@ def _extension_fact(state: dict, manifest: dict) -> dict:
     root = Path(module_file).resolve().parent if module_file else None
     digest, files, byte_count = _tree_digest(root) if root else (None, 0, 0)
     expected = manifest["bundles"]["goldsrc_model_toolchain"]
+    source_root = REPO_ROOT / expected["root"]
+    source_digest, source_files, source_bytes = _tree_digest(source_root)
+    installed_manifest = {}
+    if root and (root / "blender_manifest.toml").is_file():
+        try:
+            installed_manifest = tomllib.loads(
+                (root / "blender_manifest.toml").read_text(encoding="utf-8")
+            )
+        except (OSError, tomllib.TOMLDecodeError):
+            installed_manifest = {}
+    source_manifest = load_plugin_manifest()
     return {
         "module": module, "root": str(root) if root else None, "enabled": module is not None,
+        "version": installed_manifest.get("version"),
         "files": files, "bytes": byte_count, "sha256_tree": digest,
-        "matches_bundle": digest == expected["sha256_tree"] and files == expected["files"] and byte_count == expected["bytes"],
+        "matches_bundle": installed_manifest.get("id") == source_manifest.get("id")
+        and installed_manifest.get("version") == source_manifest.get("version")
+        and (digest, files, byte_count) == (source_digest, source_files, source_bytes),
     }
 
 

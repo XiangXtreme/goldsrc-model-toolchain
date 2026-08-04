@@ -9,8 +9,9 @@ import hashlib
 import json
 import re
 import sys
-import tomllib
 from pathlib import Path
+
+from release_metadata import load_plugin_manifest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -137,31 +138,36 @@ def audit(root: Path = REPO_ROOT) -> dict:
         manifest = {}
         errors.append(f"cannot read tool manifest: {exc}")
     bundle = manifest.get("bundles", {}).get("goldsrc_model_toolchain", {})
-    extension_manifest_path = root / EXTENSION_ROOT / "blender_manifest.toml"
     try:
-        extension_manifest = tomllib.loads(extension_manifest_path.read_text(encoding="utf-8"))
+        extension_manifest = load_plugin_manifest(root)
         extension_version = extension_manifest.get("version")
-    except (OSError, tomllib.TOMLDecodeError) as exc:
+    except ValueError as exc:
         extension_version = None
         errors.append(f"cannot read Extension manifest: {exc}")
     digest, count, byte_count = tree_digest(extension) if extension.is_dir() else ("", 0, 0)
-    expected_distribution = (
-        "development_checkout"
-        if isinstance(extension_version, str) and "-" in extension_version
-        else "public_github_release"
-    )
-    if manifest.get("distribution") != expected_distribution:
-        errors.append(
-            f"manifest distribution must be {expected_distribution} for Extension {extension_version}"
-        )
+    if manifest.get("schema_version") != 3:
+        errors.append("tool manifest schema must be 3")
+    if manifest.get("distribution_channel") != "public_github_release":
+        errors.append("tool manifest distribution channel must be public_github_release")
     if bundle.get("root") != EXTENSION_ROOT.as_posix():
         errors.append("manifest bundle path does not match the Extension source")
-    if bundle.get("version") != extension_version:
-        errors.append(
-            f"manifest bundle version {bundle.get('version')!r} does not match Extension {extension_version!r}"
-        )
-    if (bundle.get("sha256_tree"), bundle.get("files"), bundle.get("bytes")) != (digest, count, byte_count):
-        errors.append("manifest Extension tree integrity does not match repository contents")
+    if bundle.get("version_source") != "blender_manifest.toml":
+        errors.append("manifest bundle version source must be blender_manifest.toml")
+    if bundle.get("source_ref_policy") != "matching_v_tag":
+        errors.append("manifest bundle source ref policy must be matching_v_tag")
+    release = manifest.get("public_release", {})
+    if release.get("identity_source") != (EXTENSION_ROOT / "blender_manifest.toml").as_posix():
+        errors.append("public release identity source does not match the Extension manifest")
+    if release.get("pin") != "skill/build-goldsrc-models/scripts/toolchain-release.json":
+        errors.append("public release pin does not match the Skill pin")
+    for relative, expected in manifest.get("critical_files", {}).items():
+        path = root / relative
+        if not path.is_file():
+            errors.append(f"missing critical file: {relative}")
+            continue
+        data = _canonical_bytes(path)
+        if len(data) != expected.get("bytes") or hashlib.sha256(data).hexdigest() != expected.get("sha256"):
+            errors.append(f"critical file integrity mismatch: {relative}")
     mcp = manifest.get("external_tools", {}).get("blender_mcp", {})
     if mcp.get("ownership") != "external" or mcp.get("managed_by_extension") is not False:
         errors.append("official Blender MCP must remain external and unmanaged")

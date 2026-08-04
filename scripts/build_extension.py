@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 from goldsrc_toolchain.paths import ensure_outside_skill_tree, resolve_toolchain
-from release_metadata import plugin_version
+from release_metadata import extension_archive_name, plugin_version
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -49,14 +49,27 @@ def build(output: Path, *, blender: Path | None = None) -> dict:
     }
 
 
+def write_checksum(report: dict) -> Path:
+    checksum = Path(str(report["archive"]) + ".sha256")
+    checksum.write_text(
+        f"{report['sha256']}  {Path(report['archive']).name}\n", encoding="ascii",
+    )
+    return checksum
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", type=Path, required=True)
+    destination = parser.add_mutually_exclusive_group(required=True)
+    destination.add_argument("--output", type=Path)
+    destination.add_argument(
+        "--output-dir", type=Path,
+        help="Write the manifest-derived archive name inside this directory",
+    )
     parser.add_argument("--blender", type=Path)
     args = parser.parse_args()
-    report = build(args.output, blender=args.blender)
-    checksum = Path(report["archive"] + ".sha256")
-    checksum.write_text(f"{report['sha256']}  {Path(report['archive']).name}\n", encoding="ascii")
+    output = args.output or args.output_dir / extension_archive_name()
+    report = build(output, blender=args.blender)
+    checksum = write_checksum(report)
     report["checksum"] = str(checksum)
     print(json.dumps(report, indent=2))
     return 0

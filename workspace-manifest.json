@@ -1,29 +1,22 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "workspace": "goldsrc-model-toolchain",
-  "version": "1.4.1",
   "components": {
     "skill": {
       "name": "build-goldsrc-models",
       "source": "skill/build-goldsrc-models",
       "repository": "https://github.com/XiangXtreme/goldsrc-model-toolchain",
-      "source_ref": "v1.4.1",
+      "source_ref": "main",
       "install_relative": "build-goldsrc-models"
     },
     "plugin": {
       "id": "goldsrc_model_toolchain",
       "source": "plugin/goldsrc_model_toolchain",
       "repository": "https://github.com/XiangXtreme/goldsrc-model-toolchain",
-      "source_ref": "v1.4.1",
-      "version": "1.4.1",
+      "source_ref": "main",
       "api_version": 1,
       "blender": "5.2.x",
       "install_repository": "user_default"
     }
-  },
-  "compatibility": {
-    "skill_pins_plugin_tag": "v1.4.1",
-    "skill_pins_plugin_version": "1.4.1",
-    "skill_pins_api_version": 1
   }
 }

@@ -6,6 +6,8 @@ import json
 import hashlib
 import struct
 import sys
+import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -18,18 +20,37 @@ class ExtensionArchitectureTests(unittest.TestCase):
     def test_manifest_has_one_internal_plugin_and_external_mcp(self) -> None:
         manifest = json.loads((REPO_ROOT / "tool-manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(set(manifest["bundles"]), {"goldsrc_model_toolchain"})
-        self.assertEqual(manifest["bundles"]["goldsrc_model_toolchain"]["version"], "1.4.1")
-        self.assertEqual(manifest["distribution"], "public_github_release")
-        self.assertEqual(manifest["public_release"]["tag"], "v1.4.1")
+        bundle = manifest["bundles"]["goldsrc_model_toolchain"]
+        self.assertEqual(manifest["schema_version"], 3)
+        self.assertEqual(manifest["distribution_channel"], "public_github_release")
+        self.assertEqual(bundle["version_source"], "blender_manifest.toml")
+        self.assertFalse({"version", "files", "bytes", "sha256_tree"} & bundle.keys())
+        self.assertFalse({"tag", "asset"} & manifest["public_release"].keys())
         self.assertFalse(manifest["external_tools"]["blender_mcp"]["managed_by_extension"])
         self.assertEqual(manifest["external_tools"]["blender_mcp"]["ownership"], "external")
 
     def test_public_capabilities_and_bundled_compiler_are_declared(self) -> None:
         source = (EXTENSION / "api.py").read_text(encoding="utf-8")
-        self.assertIn('"version": "1.4.1"', source)
+        manifest = tomllib.loads((EXTENSION / "blender_manifest.toml").read_text(encoding="utf-8"))
+        identity_path = EXTENSION / "core" / "release_identity.py"
+        spec = importlib.util.spec_from_file_location("goldsrc_release_identity_unit", identity_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        identity = module.load_release_identity(EXTENSION / "blender_manifest.toml")
+        self.assertEqual(identity["version"], manifest["version"])
+        self.assertEqual(identity["release"], f"v{manifest['version']}")
+        with tempfile.TemporaryDirectory() as temporary:
+            development = Path(temporary) / "blender_manifest.toml"
+            development.write_text(
+                'id = "goldsrc_model_toolchain"\nversion = "9.0.0-dev"\n', encoding="utf-8",
+            )
+            development_identity = module.load_release_identity(development)
+        self.assertEqual(development_identity["distribution"], "development_build")
+        self.assertIsNone(development_identity["release"])
+        self.assertIn('"version": release["version"]', source)
         self.assertIn('"api_version": 1', source)
-        self.assertIn('"distribution": "public_github_release"', source)
-        self.assertIn('"release": "v1.4.1"', source)
+        self.assertIn('"distribution": release["distribution"]', source)
+        self.assertIn('"release": release["release"]', source)
         self.assertIn('"repository": "https://github.com/XiangXtreme/goldsrc-model-toolchain"', source)
         self.assertIn('"multi_source_sequence_authoring": False', source)
         self.assertIn('"smd_animation_binding": True', source)

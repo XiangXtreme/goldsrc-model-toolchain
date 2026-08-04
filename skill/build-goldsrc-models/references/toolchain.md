@@ -4,15 +4,9 @@
 
 The Blender Extension is maintained publicly at <https://github.com/XiangXtreme/goldsrc-model-toolchain>. This Skill does not contain Extension source, StudioMDL, Pillow, SourceIO code, pipeline runners, fixtures, or release tooling.
 
-The pinned validated release is:
+The pinned validated release is declared in `scripts/toolchain-release.json`. That minimal pin stores the Extension version, API version, Blender/platform requirements, and archive SHA-256; the installer derives the matching GitHub tag, asset name, and download URL. Do not duplicate the current pin in Skill prose.
 
-- Extension `goldsrc_model_toolchain` `1.4.1`
-- API version `1`
-- GitHub tag `v1.4.1`
-- Blender `5.2.x`, Windows x64
-- Asset and SHA-256 recorded in `scripts/toolchain-release.json`
-
-The `v1.4.1` archive contains the selected-static quick path and its validation capabilities. For large-texture or SMD-budget work, still require `capabilities()["features"]["large_texture_tiling"]` and `capabilities()["features"]["smd_budget_split"]`; use the sparse-atlas fast path only when `large_texture_tiling.sparse_compiled_tiles` is true. Consolidated static preflight additionally checks `preflight_material_texture_token`, `evaluated_material_mapping_audit`, and `export_time_triangulation`; decoded render comparison checks `roundtrip_decoded_pixel_hash`. Capability checks remain authoritative even when the version is compatible.
+For large-texture or SMD-budget work, require `capabilities()["features"]["large_texture_tiling"]` and `capabilities()["features"]["smd_budget_split"]`; use the sparse-atlas fast path only when `large_texture_tiling.sparse_compiled_tiles` is true. Consolidated static preflight additionally checks `preflight_material_texture_token`, `evaluated_material_mapping_audit`, and `export_time_triangulation`; decoded render comparison checks `roundtrip_decoded_pixel_hash`. Capability checks remain authoritative even when the version is compatible.
 
 Run `python scripts/install_toolchain.py` to inspect the installed runtime. Add `--apply` only when the Extension is missing, older, or reports another API. A newer API-1 version is accepted with a compatibility warning and is never downgraded automatically.
 

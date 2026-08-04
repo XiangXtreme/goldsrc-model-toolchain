@@ -38,7 +38,7 @@ unified_static_visual_compare
 evaluated_material_mapping_audit
 ```
 
-Use actual capabilities, not the version string: the pinned public compatibility baseline is `1.4.1 / API 1`. If the runtime is missing or older, use `scripts/install_toolchain.py --apply`. If API 1 is present but any quick-path flag is absent, read [static-api1-fallback.md](references/static-api1-fallback.md) and use the manual API-1 route; do not improvise a partial high-level workflow.
+Use actual capabilities, not a copied version string. The pinned public baseline is declared once in `scripts/toolchain-release.json`; require API 1 and the feature flags above. If the runtime is missing or older than the pin, use `scripts/install_toolchain.py --apply`. If API 1 is present but any quick-path flag is absent, read [static-api1-fallback.md](references/static-api1-fallback.md) and use the manual API-1 route; do not improvise a partial high-level workflow.
 
 ## Export One Static Selection
 

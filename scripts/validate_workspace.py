@@ -5,8 +5,9 @@ from __future__ import annotations
 
 import argparse
 import json
-import tomllib
 from pathlib import Path
+
+from release_metadata import load_plugin_manifest, load_skill_release
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -41,7 +42,6 @@ def validate(root: Path = REPO_ROOT) -> dict:
     components = workspace.get("components", {})
     skill = components.get("skill", {})
     plugin = components.get("plugin", {})
-    compatibility = workspace.get("compatibility", {})
     skill_repository = skill.get("repository")
     plugin_repository = plugin.get("repository")
     if skill_repository != plugin_repository:
@@ -68,24 +68,18 @@ def validate(root: Path = REPO_ROOT) -> dict:
             errors.append(f"local metadata is not part of Skill source: {path.relative_to(root).as_posix()}")
 
     plugin_data: dict = {}
-    if plugin_manifest.is_file():
-        try:
-            plugin_data = tomllib.loads(plugin_manifest.read_text(encoding="utf-8"))
-        except (OSError, tomllib.TOMLDecodeError) as exc:
-            errors.append(f"cannot read plugin manifest: {exc}")
-    else:
+    if not plugin_manifest.is_file():
         errors.append(f"missing plugin manifest: {plugin_manifest.relative_to(root).as_posix()}")
+    else:
+        try:
+            plugin_data = load_plugin_manifest(root, plugin_manifest)
+        except ValueError as exc:
+            errors.append(str(exc))
 
     plugin_id = plugin_data.get("id")
     plugin_version = plugin_data.get("version")
     if plugin_id != plugin.get("id"):
         errors.append(f"plugin id mismatch: manifest={plugin_id!r}, workspace={plugin.get('id')!r}")
-    if plugin_version != plugin.get("version"):
-        errors.append(f"plugin version mismatch: manifest={plugin_version!r}, workspace={plugin.get('version')!r}")
-    if workspace.get("version") != plugin.get("version"):
-        errors.append(
-            "workspace version does not match the current plugin version"
-        )
     if plugin_data.get("blender_version_min", "").split(".")[:2] != ["5", "2"]:
         errors.append("plugin minimum Blender version is not 5.2.x")
 
@@ -93,21 +87,28 @@ def validate(root: Path = REPO_ROOT) -> dict:
     bundle = tool_manifest.get("bundles", {}).get(plugin.get("id"), {})
     if bundle.get("root") != plugin.get("source"):
         errors.append(f"tool manifest plugin root mismatch: {bundle.get('root')!r}")
-    if bundle.get("version") != plugin.get("version"):
-        errors.append(f"tool manifest plugin version mismatch: {bundle.get('version')!r}")
+    if bundle.get("version_source") != "blender_manifest.toml":
+        errors.append("tool manifest must derive the plugin version from blender_manifest.toml")
 
     release_path = skill_root / "scripts" / "toolchain-release.json"
-    release = _read_json(release_path, errors) if release_path.is_file() else {}
+    release = {}
     if not release_path.is_file():
         errors.append(f"missing Skill release manifest: {release_path.relative_to(root).as_posix()}")
-    if release.get("tag") != compatibility.get("skill_pins_plugin_tag"):
-        errors.append(f"Skill release tag mismatch: {release.get('tag')!r}")
-    if release.get("version") != compatibility.get("skill_pins_plugin_version"):
-        errors.append(f"Skill release version mismatch: {release.get('version')!r}")
-    if release.get("api_version") != compatibility.get("skill_pins_api_version"):
-        errors.append(f"Skill release API mismatch: {release.get('api_version')!r}")
-    if compatibility.get("skill_pins_api_version") != plugin.get("api_version"):
-        errors.append("workspace compatibility API does not match plugin API")
+    else:
+        try:
+            release = load_skill_release(root, release_path)
+        except ValueError as exc:
+            errors.append(str(exc))
+    if release.get("version") != plugin_version:
+        errors.append(
+            f"Skill release version mismatch: pin={release.get('version')!r}, plugin={plugin_version!r}"
+        )
+    if release.get("extension_id") != plugin_id:
+        errors.append("Skill release Extension id does not match the plugin manifest")
+    if release.get("repository") != plugin_repository:
+        errors.append("Skill release repository does not match the workspace repository")
+    if release.get("api_version") != plugin.get("api_version"):
+        errors.append("Skill release API does not match the workspace plugin API")
 
     return {
         "status": "pass" if not errors else "fail",
@@ -118,6 +119,11 @@ def validate(root: Path = REPO_ROOT) -> dict:
             "id": plugin_id,
             "version": plugin_version,
             "api_version": plugin.get("api_version"),
+        },
+        "release": {
+            "version": release.get("version"),
+            "tag": release.get("tag"),
+            "asset": release.get("asset"),
         },
         "errors": errors,
     }

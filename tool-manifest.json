@@ -1,30 +1,27 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "platform": "windows-x64",
   "blender_version": "5.2.x LTS",
-  "distribution": "public_github_release",
+  "distribution_channel": "public_github_release",
   "public_release": {
     "ready": true,
     "repository": "https://github.com/XiangXtreme/goldsrc-model-toolchain",
-    "tag": "v1.4.1",
-    "asset": "goldsrc_model_toolchain-1.4.1-windows-x64.zip",
+    "identity_source": "plugin/goldsrc_model_toolchain/blender_manifest.toml",
+    "pin": "skill/build-goldsrc-models/scripts/toolchain-release.json",
     "repository_license": "GPL-2.0-or-later",
     "blockers": []
   },
   "bundles": {
     "goldsrc_model_toolchain": {
       "root": "plugin/goldsrc_model_toolchain",
-      "version": "1.4.1",
+      "version_source": "blender_manifest.toml",
       "api_version": 1,
       "source_name": "GoldSrc Model Toolchain Blender Extension",
       "source_url": "https://github.com/XiangXtreme/goldsrc-model-toolchain",
-      "source_ref": "v1.4.1",
+      "source_ref_policy": "matching_v_tag",
       "license": "GPL-2.0-or-later",
       "license_url": "https://spdx.org/licenses/GPL-2.0-or-later.html",
-      "redistribution_status": "published in GitHub Release v1.4.1",
-      "files": 49,
-      "bytes": 8429006,
-      "sha256_tree": "ea50d3f6bb64d941abf1a14c3eebbe55eddde0bbdc96418dbae70014cc3a6644"
+      "redistribution_status": "published through tagged GitHub Releases"
     }
   },
   "external_tools": {
@@ -73,10 +70,6 @@
     }
   },
   "critical_files": {
-    "plugin/goldsrc_model_toolchain/blender_manifest.toml": {
-      "bytes": 573,
-      "sha256": "d93b0710fa674c93f3e269fe4568b54cc89f4838623fd7ed009cd583cdafc252"
-    },
     "plugin/goldsrc_model_toolchain/bin/windows-x64/studiomdl.exe": {
       "bytes": 523776,
       "sha256": "a96afa8b711be20e706fadcbe0f62d996812c4b3ccc3c4e3b617a3a12550276a"

@@ -33,8 +33,9 @@ python scripts/audit_repository.py
 
 ## 版本与发布
 
-- 当前正式版本为插件 `1.4.1`、API `1`、Skill Release `v1.4.1`；后续未发布改动应从下一开发版本开始管理。
-- 修改 Skill 与插件的兼容关系时，同时检查 `workspace-manifest.json`、`tool-manifest.json` 和 Skill 的 `scripts/toolchain-release.json`。
+- Extension 版本的唯一源码是 `plugin/goldsrc_model_toolchain/blender_manifest.toml`。API、tag、asset 和下载 URL 必须从它派生，不要手工复制版本号。
+- 准备正式版本时运行 `python scripts/prepare_release.py <version> --output-dir <仓库外目录>`。该命令原子更新 Extension manifest、构建 ZIP，并写入 Skill 的最小 release pin；失败会回滚。
+- Skill 的 `scripts/toolchain-release.json` 只保留分发所需的 `version` 和 ZIP SHA-256，不要写入可派生的 tag、asset 或 download URL。
 - 未形成正式 Release 前，不要把开发中的源码声明为已发布版本，也不要覆盖既有 Release 标签。
 - 任何共享行为或验证规则的修改都应补充对应测试或回归 fixture。
 

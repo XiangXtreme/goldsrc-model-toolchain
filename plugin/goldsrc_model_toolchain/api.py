@@ -29,6 +29,7 @@ from .core.reporting import (
     summarize_stage_report,
     write_json,
 )
+from .core.release_identity import load_release_identity
 from .core.physics_config import configure_rigidbody_world
 from .core.rigidbody_bake import (
     apply_rigidbody_world_transform,
@@ -65,17 +66,19 @@ class RuntimeAPI:
         self._static_analyses = {}
 
     def capabilities(self) -> dict:
-        compiler = Path(__file__).resolve().parent / "bin" / "windows-x64" / "studiomdl.exe"
+        package_root = Path(__file__).resolve().parent
+        compiler = package_root / "bin" / "windows-x64" / "studiomdl.exe"
+        release = load_release_identity(package_root / "blender_manifest.toml")
         return {
-            "id": "goldsrc_model_toolchain",
-            "version": "1.4.1",
+            "id": release["id"],
+            "version": release["version"],
             "api_version": 1,
             "blender": "5.2.x",
             "platform": "windows-x64",
-            "distribution": "public_github_release",
+            "distribution": release["distribution"],
             "repository": "https://github.com/XiangXtreme/goldsrc-model-toolchain",
-            "release": "v1.4.1",
-            "public_compatibility_baseline": "v1.4.1",
+            "release": release["release"],
+            "public_compatibility_baseline": release["public_compatibility_baseline"],
             "stages": list(PUBLIC_STAGES),
             "formats": {"smd": 1, "mdl": 10, "qc": True, "indexed_bmp": True},
             "roundtrip_parser": "SourceIO 5.5.4 derived GoldSrc-only reader",

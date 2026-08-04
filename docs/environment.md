@@ -3,7 +3,7 @@
 ## Supported Runtime
 
 - Blender `5.2.x` LTS, Windows x64.
-- Extension ID `goldsrc_model_toolchain`, release `1.4.1`, API version `1`.
+- Extension ID `goldsrc_model_toolchain`, API version `1`; read the release version from `blender_manifest.toml` or runtime capabilities.
 - Official `ahujasid/blender-mcp` is external. Environment checks may inspect it but never install, overwrite, downgrade, or update it.
 - Sven StudioMDL, Pillow `12.3.0`, and the SourceIO-derived GoldSrc reader are bundled in the Extension ZIP.
 
@@ -15,7 +15,7 @@ Treat the repository and installed Extension as read-only during model productio
 
 ```powershell
 python scripts/check_environment.py
-python scripts/build_extension.py --output <artifact-dir>/goldsrc_model_toolchain-1.4.1-windows-x64.zip
+python scripts/build_extension.py --output-dir <artifact-dir>
 python scripts/bootstrap_environment.py --apply
 ```
 
@@ -25,4 +25,4 @@ For a clean regression, install the built ZIP into a temporary Blender 5.2 confi
 
 ## Public Release
 
-Build `goldsrc_model_toolchain-1.4.1-windows-x64.zip`, emit its `.sha256`, audit extraction through `scripts/audit_release_archives.py`, and upload both files to GitHub Release `v1.4.1`. Release archives must contain no cache, local metadata, Blender MCP files, Source 1/2 assets, BSP, VTF/VMT, DMX/VTA, historical scenes, or runtime artifacts.
+Run `python scripts/prepare_release.py <version> --output-dir <artifact-dir>`, audit the generated ZIP through `scripts/audit_release_archives.py`, and upload the ZIP plus `.sha256` to the tag reported by the command. Release archives must contain no cache, local metadata, Blender MCP files, Source 1/2 assets, BSP, VTF/VMT, DMX/VTA, historical scenes, or runtime artifacts.
