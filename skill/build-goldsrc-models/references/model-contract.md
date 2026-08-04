@@ -1,6 +1,6 @@
 # Model Contract Version 2
 
-Use one `model_contract.json` per deliverable. Keep it in the artifact directory and use only relative paths inside it. Validate before authoring and again with `--require-files` after export.
+Use one `model_contract.json` per deliverable. Keep it in the artifact directory and use only relative paths inside it. Validate structure before authoring; after EXPORT, let each downstream stage apply `export_plan.json` and validate the resulting effective file set.
 
 Version 2 is required for new production work. Version 1 remains readable only so old artifacts can be recovered; it does not provide request-evidence gating.
 
@@ -18,17 +18,20 @@ Version 2 is required for new production work. Version 1 remains readable only s
 | `bodies` | `{name,source,object?}` entries; `source` is a relative reference SMD |
 | `bodygroups` | `{name,choices}`; every choice is exactly `{studio,object?}` or `{blank:true}` |
 | `textures` | `{name,source,width,height,modes,require_masked_pixels?}`; names/sources end in `.bmp` |
+| `large_textures` | Logical `{name,image,width,height,tile_size?}` atlases; EXPORT expands possible tiles and compiles only referenced ones |
 | `skin_families` | Texture-name rows of equal width; each slot keeps identical dimensions across rows |
 | `sequences` | `{name,source,action?,fps,frame?,loop?,activity?,events?,motion?,origin?}` |
 | `hitboxes` | `{group,bone,min,max}`; an empty list leaves hitbox generation to StudioMDL and does not require a zero-count MDL table |
 | `attachments` | `{index,bone,origin}` with unique indices `0..3` |
 | `controllers` | `{index,bone,type,start,end}` with unique indices `0..4` |
 | `bounds` | Explicit `bbox` and `cbox`, each containing numeric `min` and `max` vec3 values |
-| `outputs` | Optional relative `qc`, `sven_mdl`, and `report` overrides |
+| `outputs` | Optional relative `qc`, `sven_mdl`, `export_plan`, and `report` overrides |
 | `acceptance` | Optional `required_phases`, `visual_views`, and `allow_known_blockers` |
 | `physics` | Optional `{mode,simulation,stages,interactions}` for pre-baked multi-stage rigid-body validation |
 | `limitations` | Optional `{external_sequence_groups:[sequence names]}`; names must match actual external sequence entries |
 | `compatibility` | Optional `{role,baseline_mdl}` for `player` or `npc`; baseline path is artifact-relative MDL v10 |
+
+Texture roles are intentionally asymmetric. A prepared Blender material references a logical PNG and carries the logical `.bmp` token used by SMD. A normal `textures[].source` names the indexed BMP that EXPORT writes for compilation; it is not the image that must be rebound to the prepared material. A `large_textures[].image` names the logical PNG, while generated `512x512` tile BMPs exist only in the effective export plan and compiled artifact set.
 
 ## Intent And Evidence
 
@@ -105,6 +108,6 @@ contract = api.load_contract(path, artifacts_dir=artifact_dir, require_files=Fal
 api.execute_stage("PREFLIGHT", path, artifact_dir)
 ```
 
-After `EXPORT`, reload with `require_files=True` before compilation. Use `api.inspect_mdl(path)` for direct binary inspection, `api.validate_model_compatibility(...)` for player/NPC baselines, and `api.validate_player_portrait(...)` for the separate portrait BMP. The implementation and host maintenance CLIs live in the public `goldsrc-model-toolchain` repository, not in this Skill.
+After `EXPORT`, inspect export-plan version 2 and execute COMPILE normally; COMPILE applies its `compiled` texture list before `require_files=True` validation, so omitted sparse-atlas tiles need not exist. A direct `api.load_contract(..., require_files=True)` call validates the raw declaration and does not apply the plan. Use `api.inspect_mdl(path)` for direct binary inspection, `api.validate_model_compatibility(...)` for player/NPC baselines, and `api.validate_player_portrait(...)` for the separate portrait BMP. The implementation and host maintenance CLIs live in the public `goldsrc-model-toolchain` repository, not in this Skill.
 
 Validation rejects missing version 2 intent, untraceable or duplicate requirement IDs, impossible evidence phases, malformed revision scope, non-passing revision baselines, absolute or escaping paths, duplicate names/indices, bone cycles and missing parents, invalid bodygroup choices, missing SMD/BMP files, skeleton divergence, non-single-weight SMD vertices, material-token mismatches, invalid BMP encodings, mismatched skin rows/dimensions, invalid FPS/motion/events, missing bone references, and invalid bounds.

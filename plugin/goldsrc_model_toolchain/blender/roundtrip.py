@@ -13,14 +13,17 @@ from mathutils import Vector
 from ..core.action_curves import representative_frame_samples
 from ..core.errors import ToolchainError
 from ..core.model_contract import load_contract
+from ..core.reporting import requirement_report_reference
 from ..core.visual_evidence import (
     choose_front_axis,
     create_labeled_contact_sheet,
+    decoded_pixel_sha256,
     representative_sample_labels,
     summarize_preview_visibility,
 )
 from .action_import import local_pose_globals
 from .mdl_import import import_mdl
+from .visual_compare import render_canonical_objects
 
 
 def _bounds(objects):
@@ -111,6 +114,7 @@ def _render(path: Path) -> dict:
         return {
             "path": str(path),
             "sha256": hashlib.sha256(data).hexdigest(),
+            "pixel_sha256": decoded_pixel_sha256(path),
             "bytes": len(data),
             "mean_luminance": round(sum(luminance) / max(1, len(luminance)), 6),
             "foreground_mean_luminance": round(
@@ -137,7 +141,7 @@ def _requirements(contract: dict, evidence: dict) -> list[dict]:
             "id": requirement["id"],
             "status": "pass",
             "summary": "Independent MDL v10 readback reconstructed geometry, textures, bones and animation",
-            "evidence": evidence,
+            "evidence": requirement_report_reference(),
         }
         for requirement in contract.get("intent", {}).get("requirements", [])
         if "sourceio_roundtrip" in requirement.get("evidence_phases", [])
@@ -238,10 +242,26 @@ def _audit_weighted_vertices(imported, *, tolerance: float = 0.001) -> dict:
     return report
 
 
-def run_roundtrip(contract_path: str | Path, artifacts_dir: str | Path) -> dict:
+def run_roundtrip(
+    contract_path: str | Path,
+    artifacts_dir: str | Path,
+    *,
+    effective_contract: dict | None = None,
+    evidence_dir: str | Path | None = None,
+) -> dict:
     root = Path(artifacts_dir).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
-    contract = load_contract(contract_path, artifact_dir=root, require_files=True)
+    evidence_root = Path(evidence_dir).expanduser().resolve() if evidence_dir else root
+    try:
+        evidence_root.relative_to(root)
+    except ValueError as exc:
+        raise ToolchainError(
+            "ROUNDTRIP", "roundtrip.evidence_escape",
+            "Round-trip evidence directory must stay inside artifacts_dir",
+            {"artifacts_dir": str(root), "evidence_dir": str(evidence_root)},
+        ) from exc
+    evidence_root.mkdir(parents=True, exist_ok=True)
+    contract = effective_contract or load_contract(contract_path, artifact_dir=root, require_files=True)
     mdl_path = (root / contract["outputs"]["sven_mdl"]).resolve()
     imported = import_mdl(mdl_path, scale=1.0, reset_scene=True)
     if not imported["objects"]:
@@ -323,6 +343,11 @@ def run_roundtrip(contract_path: str | Path, artifacts_dir: str | Path) -> dict:
     if suffixed:
         raise ToolchainError("ROUNDTRIP", "roundtrip.suffix", "Readback created numeric-suffix collisions", {"names": suffixed})
     weighted_vertex_audit = _audit_weighted_vertices(imported)
+    canonical_preview = render_canonical_objects(
+        imported["objects"], contract,
+        evidence_root / "roundtrip_canonical.png",
+        apply_root_axis=False,
+    )
     bounds = _configure_render(imported["objects"])
     previews = []
     contact_sheets = []
@@ -336,14 +361,14 @@ def run_roundtrip(contract_path: str | Path, artifacts_dir: str | Path) -> dict:
         sample_labels = representative_sample_labels(len(samples))
         for sample_index, frame in enumerate(samples):
             bpy.context.scene.frame_set(int(round(frame)))
-            path = root / f"roundtrip_{action.name}_{int(round(frame)):04d}.png"
+            path = evidence_root / f"roundtrip_{action.name}_{int(round(frame)):04d}.png"
             facts = _render(path)
             facts.update({
                 "action": action.name,
                 "frame": frame,
                 "sample_label": sample_labels[sample_index],
             })
-            hashes.add(facts["sha256"])
+            hashes.add(facts["pixel_sha256"])
             previews.append(facts)
             action_previews.append(facts)
         if action.frame_range[1] > action.frame_range[0] and len(hashes) == 1:
@@ -351,7 +376,7 @@ def run_roundtrip(contract_path: str | Path, artifacts_dir: str | Path) -> dict:
                 "ROUNDTRIP", "roundtrip.static_previews", "Animated Action produced identical five-point previews",
                 {"action": action.name, "samples": samples},
             )
-        sheet_path = root / f"roundtrip_{action.name}_contact_sheet.png"
+        sheet_path = evidence_root / f"roundtrip_{action.name}_contact_sheet.png"
         sheet = create_labeled_contact_sheet(
             [
                 {
@@ -385,7 +410,7 @@ def run_roundtrip(contract_path: str | Path, artifacts_dir: str | Path) -> dict:
         scene.frame_start = int(round(first_action.frame_range[0]))
         scene.frame_end = int(round(first_action.frame_range[1]))
         scene.frame_set(scene.frame_start)
-    blend_path = root / "mdl_roundtrip.blend"
+    blend_path = evidence_root / "mdl_roundtrip.blend"
     bpy.ops.wm.save_as_mainfile(filepath=str(blend_path))
     evidence = {
         "meshes": [obj.name for obj in imported["objects"]],
@@ -397,7 +422,10 @@ def run_roundtrip(contract_path: str | Path, artifacts_dir: str | Path) -> dict:
         "action_matrix_audits": imported["action_matrix_audits"],
         "weighted_vertex_audit": weighted_vertex_audit,
         "preview_hashes": [preview["sha256"] for preview in previews],
+        "preview_pixel_hashes": [preview["pixel_sha256"] for preview in previews],
         "contact_sheet_hashes": [sheet["sha256"] for sheet in contact_sheets],
+        "contact_sheet_pixel_hashes": [sheet["pixel_sha256"] for sheet in contact_sheets],
+        "canonical_preview_pixel_hash": canonical_preview["pixel_sha256"],
         "preview_visibility": preview_visibility,
         "playback": {
             "action": first_action.name if first_action else None,
@@ -415,6 +443,7 @@ def run_roundtrip(contract_path: str | Path, artifacts_dir: str | Path) -> dict:
         "bounds": bounds,
         "previews": previews,
         "contact_sheets": contact_sheets,
+        "canonical_preview": canonical_preview,
         "facts": evidence,
         "known_blockers": [],
         "requirement_evidence": _requirements(contract, evidence),

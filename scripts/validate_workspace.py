@@ -82,6 +82,10 @@ def validate(root: Path = REPO_ROOT) -> dict:
         errors.append(f"plugin id mismatch: manifest={plugin_id!r}, workspace={plugin.get('id')!r}")
     if plugin_version != plugin.get("version"):
         errors.append(f"plugin version mismatch: manifest={plugin_version!r}, workspace={plugin.get('version')!r}")
+    if workspace.get("version") != plugin.get("version"):
+        errors.append(
+            "workspace version does not match the current plugin version"
+        )
     if plugin_data.get("blender_version_min", "").split(".")[:2] != ["5", "2"]:
         errors.append("plugin minimum Blender version is not 5.2.x")
 
@@ -102,8 +106,6 @@ def validate(root: Path = REPO_ROOT) -> dict:
         errors.append(f"Skill release version mismatch: {release.get('version')!r}")
     if release.get("api_version") != compatibility.get("skill_pins_api_version"):
         errors.append(f"Skill release API mismatch: {release.get('api_version')!r}")
-    if compatibility.get("skill_pins_plugin_version") != plugin.get("version"):
-        errors.append("workspace compatibility version does not match plugin version")
     if compatibility.get("skill_pins_api_version") != plugin.get("api_version"):
         errors.append("workspace compatibility API does not match plugin API")
 

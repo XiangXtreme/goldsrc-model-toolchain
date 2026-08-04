@@ -203,8 +203,10 @@ def main() -> dict:
     if contact_sheet["size"][0] >= 5 * contact_sheet["tile_size"][0]:
         raise RuntimeError(f"contact sheet regressed to an unreadable single row: {contact_sheet['size']}")
     repeated_sheet = repeat.get("contact_sheets", [{}])[0]
-    if repeated_sheet.get("sha256") != contact_sheet.get("sha256"):
+    if repeated_sheet.get("pixel_sha256") != contact_sheet.get("pixel_sha256"):
         raise RuntimeError(f"repeated ROUNDTRIP produced stale or unstable contact sheet: {repeated_sheet}")
+    if repeat["facts"].get("preview_pixel_hashes") != results["ROUNDTRIP"]["facts"].get("preview_pixel_hashes"):
+        raise RuntimeError("repeated ROUNDTRIP changed decoded preview pixels")
     texture = results["EXPORT"]["textures"][0]
     conversion = texture.get("conversion", {})
     fidelity = conversion.get("fidelity") or {}

@@ -10,6 +10,7 @@ from pathlib import Path, PureWindowsPath
 from typing import Any, Iterable
 
 from .large_textures import LargeTextureError, tile_name, validate_large_texture_spec
+from .material_mapping import STATIC_MATERIAL_AUDIT_FIELD
 from .smd import SmdError, geometry_budget, read_smd, validate_smd
 from .textures import TextureError, validate_indexed_bmp
 from .physics_events import normalize_physics, validate_physics_definition
@@ -241,6 +242,46 @@ def _validate_texture_bake(contract: dict[str, Any], errors: list[str]) -> None:
         errors.append("texture_bake.require_active_render must be a boolean")
 
 
+def _validate_static_material_audit(contract: dict[str, Any], errors: list[str]) -> None:
+    audit = contract.get(STATIC_MATERIAL_AUDIT_FIELD)
+    if audit is None:
+        return
+    if not isinstance(audit, dict):
+        errors.append(f"{STATIC_MATERIAL_AUDIT_FIELD} must be an object")
+        return
+    if audit.get("schema_version") != 1:
+        errors.append(f"{STATIC_MATERIAL_AUDIT_FIELD}.schema_version must be 1")
+    if audit.get("status") != "pass":
+        errors.append(f"{STATIC_MATERIAL_AUDIT_FIELD}.status must be pass")
+    for field in ("source_object", "prepared_object"):
+        if not isinstance(audit.get(field), str) or not audit[field].strip():
+            errors.append(f"{STATIC_MATERIAL_AUDIT_FIELD}.{field} must be a non-empty object name")
+    for surface_name in ("source_evaluated", "prepared"):
+        surface = audit.get(surface_name)
+        if not isinstance(surface, dict):
+            errors.append(f"{STATIC_MATERIAL_AUDIT_FIELD}.{surface_name} must be an object")
+            continue
+        materials = surface.get("materials")
+        if not isinstance(materials, list) or not materials:
+            errors.append(f"{STATIC_MATERIAL_AUDIT_FIELD}.{surface_name}.materials must be non-empty")
+            continue
+        for index, material in enumerate(materials):
+            label = f"{STATIC_MATERIAL_AUDIT_FIELD}.{surface_name}.materials[{index}]"
+            if not isinstance(material, dict):
+                errors.append(f"{label} must be an object")
+                continue
+            for count in ("slot", "faces", "triangles"):
+                if not isinstance(material.get(count), int) or material[count] < 0:
+                    errors.append(f"{label}.{count} must be a non-negative integer")
+            if surface_name == "prepared" and (
+                not isinstance(material.get("token"), str) or not material["token"].strip()
+            ):
+                errors.append(f"{label}.token must be a logical texture token")
+    mapping = audit.get("old_to_new")
+    if not isinstance(mapping, list) or not mapping:
+        errors.append(f"{STATIC_MATERIAL_AUDIT_FIELD}.old_to_new must be non-empty")
+
+
 def normalize_contract(value: dict[str, Any]) -> dict[str, Any]:
     contract = copy.deepcopy(value)
     contract.setdefault("version", CONTRACT_VERSION)
@@ -311,6 +352,7 @@ def validate_contract(
                 errors.append("limitations.external_sequence_groups must not contain duplicates")
     _validate_intent(contract, errors)
     _validate_texture_bake(contract, errors)
+    _validate_static_material_audit(contract, errors)
     errors.extend(validate_physics_definition(contract.get("physics")))
 
     bones = contract["bones"]

@@ -4,7 +4,7 @@ Use this as a symptom-driven index. Each entry records a reproduced failure, not
 
 ## Contents
 
-- Geometry, UV, normals, and orientation: `uv-compensation`, `evaluated-uv`, `single-weight`, `loop-normals`, `import-orientation`
+- Geometry, UV, normals, and orientation: `uv-compensation`, `evaluated-uv`, `evaluated-material-index`, `single-weight`, `loop-normals`, `import-orientation`
 - Textures and materials: `tex-indexed`, `tex-colorspace`, `tex-stale-image`, `tex-masked`, `tex-bake-engine`, `tex-bake-active-render-uv`, `tex-bake-unlit`, `smd-material-token`, `tex-export-fidelity`
 - SMD, QC, and bounds: `smd-bounds`, `compiler-success`, `submodel-budget`, `large-texture-atlas`, `smd-budget-split`, `custom-build-preflight`, `bmp-errors`, `runtime-upload`, `remap-cache`, `obsolete-qc`
 - Animation: `action-channelbags`, `bone-space`, `animation-bind-pose`, `preserve-target-animation`, `playback-start`, `loop-endpoint`, `frame-count-semantics`, `player-compatibility`, `npc-root-motion`
@@ -23,6 +23,17 @@ Use this as a symptom-driven index. Each entry records a reproduced failure, not
 - **Avoid:** assuming a modifier preserves UV semantics, making an unrelated UV layer active after the author still, or asking EXPORT to infer a PBR bake.
 - **Verify:** compare evaluated UV/material facts, UV-degenerate counts, SMD triangle tokens, final BMP, and author/readback landmarks on the same visible surfaces.
 - **Evidence:** Blender 5.2 dependency-graph export path and GoldSrc toolchain evaluated-surface preflight/export reports.
+
+<a id="evaluated-material-index"></a>
+### GEO-05 Evaluated Material Indices Must Be Remapped By Identity
+
+- **Applies to:** Geometry Nodes or modifiers that append, replace, or reorder evaluated material slots.
+- **Visible symptom:** geometry is complete but the MDL uses an unused raw material while the actual evaluated material bakes black or disappears.
+- **Root cause:** Blender 5.2 `bpy.data.meshes.new_from_object(evaluated, ...)` can rebuild from original object data and return different polygon material indices even when the evaluated slot list looks correct.
+- **Reliable approach:** capture the current evaluated topology, per-polygon material identity, and per-slot face/triangle counts first; require identical frozen topology; retain only used materials; apply an explicit old-index to compacted-index mapping; persist source, prepared, and logical SMD token counts in the contract.
+- **Avoid:** trusting equal slot counts, matching prepared against its own MDL readback, or accepting a visual comparison that starts from the already-remapped object as the only material evidence.
+- **Verify:** PREFLIGHT re-evaluates the selected source and prepared object independently; EXPORT requires every source-used material to retain its face/triangle distribution and every prepared logical token to receive the expected SMD triangles.
+- **Evidence:** Blender 5.2 `mesh_create_eval_final()` path and the two-material Geometry Nodes regression fixture with raw slot 0 unused and evaluated slot 1 used.
 
 <a id="uv-compensation"></a>
 ### GEO-01 UV 1.007 Compensation Is Not A Default
@@ -210,9 +221,9 @@ Use this as a symptom-driven index. Each entry records a reproduced failure, not
 - **Applies to:** BLBH-style lightmap/terrain atlases and any author image larger than `512x512`.
 - **Visible symptom:** StudioMDL rejects a texture, the model shows one repeated quadrant, or a triangle at a tile edge samples the wrong material.
 - **Root cause:** GoldSrc texture records use the conservative `512x512` ceiling; an atlas was declared as one texture or a crossing triangle was assigned to one tile without geometric clipping.
-- **Reliable approach:** declare the logical atlas dimensions, crop aligned `512x512` indexed tiles, keep the full `0..1` UV mapping, clip/retriangulate crossing triangles, and remap each generated triangle to local tile UVs. Preserve each input triangle's 3D area and compare full vertex attributes when removing clipped-corner duplicates; equal UVs are not enough because stacked islands can have different spatial vertices. Keep the generated material token and BMP filename identical.
-- **Avoid:** embedding a `2048x2048` BMP directly, merely scaling UVs, or relying on a four-line SMD slicer. More than 64 tiles requires multiple MDLs and is outside the current one-MDL contract.
-- **Verify:** inspect `export_plan.json`, area-preservation evidence, tile BMP dimensions/palettes, SMD tile tokens and local UV bounds, compiled MDL texture count/dimensions, and readback landmarks at tile boundaries.
+- **Reliable approach:** declare the logical atlas dimensions, keep the full `0..1` UV mapping, clip/retriangulate crossing triangles, crop only the referenced `512x512` indexed tiles, and remap each generated triangle to local tile UVs. Preserve each input triangle's 3D area and compare full vertex attributes when removing clipped-corner duplicates; equal UVs are not enough because stacked islands can have different spatial vertices. Keep each compiled material token and BMP filename identical.
+- **Avoid:** embedding a `2048x2048` BMP directly, merely scaling UVs, adding hidden anchor triangles to retain empty tiles, manually listing every possible tile in QC, or relying on a four-line SMD slicer. More than 64 possible tiles requires multiple MDLs and is outside the current one-contract path.
+- **Verify:** inspect `export_plan.json` version 2 `declared`, `compiled`, and `omitted_unused_large_tiles`, area-preservation evidence, compiled tile BMP dimensions/palettes, SMD tile tokens and local UV bounds, compiled MDL texture count/dimensions, and readback landmarks at tile boundaries. The MDL texture count must match `compiled`, not the atlas's full tile grid.
 - **Evidence:** local BLBH source audit, Toolchain atlas clipping tests, indexed tile orientation regression, and MDL v10 inspection.
 
 <a id="smd-budget-split"></a>
@@ -461,17 +472,17 @@ Use this as a symptom-driven index. Each entry records a reproduced failure, not
 - **Root cause:** incomplete readback cleanup, stale namespace, or unsaved Action binding/range state.
 - **Reliable approach:** clean only the readback-owned namespace, reconstruct all embedded Actions and skin families, bind the selected Action, set the start frame, and save.
 - **Avoid:** reusing the export parser as the independent reader or accepting suffix collisions as cosmetic.
-- **Verify:** run ROUNDTRIP twice, compare names and five sampled frames, and reopen the saved Blend.
+- **Verify:** use `export_selected_static(..., assurance="strict")`; its internal pipeline performs two isolated ROUNDTRIP runs and compares names, structure, weighted vertices, decoded `pixel_sha256`, and contact-sheet pixel hashes. Do not manually repeat a passing stage. PNG byte hashes identify artifacts but are not a pixel-equivalence test.
 - **Evidence:** repeated SourceIO-derived roundtrip fixture.
 
 <a id="blank-readback"></a>
 ### READBACK-02 A Passing Stage With Zero Foreground Is Not Visual Evidence
 
 - **Applies to:** every animated MDL readback, especially flat, wide, very large, or axis-swapped models.
-- **Visible symptom:** ROUNDTRIP writes five distinct PNG hashes but every image is black or empty, often leading to repeated brightness edits that do not reveal the model.
-- **Root cause:** a fixed diagonal camera can look along the model's thickness, a bounds-scaled camera can exceed Blender's default far clip, and whole-image luminance cannot reliably distinguish model pixels from the background.
-- **Reliable approach:** choose the front view from readback bounds, frame the thinnest axis orthographically, scale near/far clipping with model span, count foreground from render alpha, and fail when all generated previews contain zero foreground pixels.
-- **Avoid:** repeatedly brightening textures or world lighting before checking camera axis/clipping, or accepting phase status and image hashes without opening the images.
+- **Visible symptom:** ROUNDTRIP writes five distinct PNG byte hashes but every decoded frame is identical, black, or empty, often leading to repeated brightness edits that do not reveal the model.
+- **Root cause:** PNG metadata/compression can change file bytes without changing pixels; separately, a fixed diagonal camera can look along the model's thickness, a bounds-scaled camera can exceed Blender's default far clip, and whole-image luminance cannot reliably distinguish model pixels from the background.
+- **Reliable approach:** use decoded RGBA `pixel_sha256` for frame-variation checks, choose the front view from readback bounds, frame the thinnest axis orthographically, scale near/far clipping with model span, count foreground from render alpha, and fail when all generated previews contain zero foreground pixels.
+- **Avoid:** treating PNG byte hashes as motion evidence, repeatedly brightening textures or world lighting before checking camera axis/clipping, or accepting phase status and hashes without opening the images.
 - **Verify:** inspect reported bounds, view axis, camera clip range, foreground fractions, and the actual start/quarter/mid/three-quarter/end PNGs.
 - **Evidence:** `64x512x128` full-rotation readback fixture and Toolchain `1.3.1` blank-preview regression.
 
@@ -481,7 +492,7 @@ Use this as a symptom-driven index. Each entry records a reproduced failure, not
 - **Applies to:** multi-frame Action review, author/readback comparisons, and physical event chains.
 - **Visible symptom:** a very wide strip is scaled until poses and labels are unreadable, or a compact overview appears acceptable while a source frame still contains a seam, penetration, brightness, or framing defect.
 - **Root cause:** layout optimized for sequence scanning cannot preserve every source pixel, and equal-time samples do not necessarily represent contact-driven event order.
-- **Reliable approach:** use at most three columns for the ordinary five-point overview, put Action/frame or event labels in caption bands outside images, preserve every original PNG and its hash, and retain a JSON frame-to-cell mapping.
+- **Reliable approach:** use at most three columns for the ordinary five-point overview, put Action/frame or event labels in caption bands outside images, preserve every original PNG with both artifact and decoded-pixel hashes, and retain a JSON frame-to-cell mapping.
 - **Avoid:** one ultra-wide row, drawing labels over the model, deleting source stills after composition, or labeling physical samples as quarters when they are event-selected.
-- **Verify:** inspect the contact sheet first, then open suspicious source frames at full resolution; confirm cell paths, hashes, labels, and image/caption rectangles in the layout JSON. Repeat `ROUNDTRIP` and reject stale sheets.
-- **Evidence:** Toolchain `1.3.3` compositor unit tests, clean Blender 5.2 five-stage fixture, repeated roundtrip, and live official Blender MCP API regression.
+- **Verify:** inspect the contact sheet first, then open suspicious source frames at full resolution; confirm cell paths, byte hashes, `source_pixel_sha256`, labels, and image/caption rectangles in the layout JSON. Repeat `ROUNDTRIP` and reject stale sheets.
+- **Evidence:** Toolchain `1.4.0` compositor unit tests, clean Blender 5.2 five-stage fixture, repeated roundtrip, and live official Blender MCP API regression.

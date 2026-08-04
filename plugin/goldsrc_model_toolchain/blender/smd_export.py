@@ -11,8 +11,17 @@ import bpy
 from mathutils import Matrix, Vector
 
 from ..core.errors import ToolchainError
+from ..core.export_plan import apply_export_plan_data, build_export_plan
 from ..core.large_textures import LargeTextureError, split_smd_document, tile_smd_document, write_smd
-from ..core.model_contract import load_contract, write_qc
+from ..core.material_mapping import (
+    STATIC_MATERIAL_AUDIT_FIELD,
+    aggregate_token_triangles,
+    distribution_projection,
+    inspect_mesh_material_usage,
+)
+from ..core.material_tokens import resolve_texture_token
+from ..core.model_contract import load_contract, validate_contract, write_qc
+from ..core.reporting import requirement_report_reference
 from ..core.smd import animation_budget_hint, audit_loop_endpoint, geometry_budget, read_smd, validate_smd
 from ..core.textures import (
     convert_image_tile_to_indexed_bmp,
@@ -132,23 +141,14 @@ def _image_hints(material) -> list[str]:
         for node in material.node_tree.nodes:
             image = getattr(node, "image", None)
             if image:
+                custom = image.get("goldsrc_texture_token")
+                if isinstance(custom, str):
+                    hints.append(custom)
                 hints.extend((image.name, Path(bpy.path.abspath(image.filepath or image.name)).name))
     return hints
 
 
 def _material_token(material, contract: dict) -> str:
-    names = {texture["name"].casefold(): texture["name"] for texture in contract["textures"]}
-    sources = {Path(texture["source"]).name.casefold(): texture["name"] for texture in contract["textures"]}
-    large_aliases = {
-        str(atlas["name"]).casefold(): str(atlas["name"])
-        for atlas in contract.get("large_textures", [])
-        if isinstance(atlas, dict) and isinstance(atlas.get("name"), str)
-    }
-    large_images = {
-        str(atlas["image"]).casefold(): str(atlas["name"])
-        for atlas in contract.get("large_textures", [])
-        if isinstance(atlas, dict) and isinstance(atlas.get("name"), str) and isinstance(atlas.get("image"), str)
-    }
     candidates = []
     if material:
         custom = material.get("goldsrc_texture_token")
@@ -156,18 +156,9 @@ def _material_token(material, contract: dict) -> str:
             candidates.append(custom)
         candidates.extend(_image_hints(material))
         candidates.extend((material.name, material.name + ".bmp"))
-    for candidate in candidates:
-        key = Path(str(candidate)).name.casefold()
-        if key in names:
-            return names[key]
-        if key in sources:
-            return sources[key]
-        if key in large_aliases:
-            return large_aliases[key]
-        if key in large_images:
-            return large_images[key]
-        if f"{key}.bmp" in large_aliases:
-            return large_aliases[f"{key}.bmp"]
+    token = resolve_texture_token(candidates, contract)
+    if token is not None:
+        return token
     raise ToolchainError(
         "EXPORT", "export.material", "Mesh material does not resolve to a contract texture",
         {"material": material.name if material else None, "image_hints": _image_hints(material)},
@@ -242,14 +233,31 @@ def _write_triangles(handle, obj, contract: dict, bone_ids: dict[str, int]) -> d
         materials = list(getattr(mesh, "materials", ()))
         if not materials:
             materials = [slot.material for slot in obj.material_slots]
+            for material in materials:
+                mesh.materials.append(material)
+        usage = inspect_mesh_material_usage(mesh)
+        if usage.invalid_indices:
+            raise ToolchainError(
+                "EXPORT", "export.material_index",
+                "Evaluated polygons reference material slots that do not exist",
+                {"object": obj.name, "invalid_indices": list(usage.invalid_indices)},
+            )
+        evaluated_distribution = []
+        for item, material in zip(usage.distribution, materials):
+            evaluated_distribution.append({
+                **item,
+                "token": _material_token(material, contract) if item["used"] else item.get("token"),
+            })
         count = 0
         tokens = set()
+        material_triangle_counts: dict[str, int] = {}
         handle.write("triangles\n")
         for triangle in mesh.loop_triangles:
             polygon = mesh.polygons[triangle.polygon_index]
             material = materials[polygon.material_index] if polygon.material_index < len(materials) else None
             token = _material_token(material, contract)
             tokens.add(token)
+            material_triangle_counts[token] = material_triangle_counts.get(token, 0) + 1
             handle.write(token + "\n")
             loop_indices = list(triangle.loops)
             if reverse:
@@ -278,9 +286,120 @@ def _write_triangles(handle, obj, contract: dict, bone_ids: dict[str, int]) -> d
             "evaluated_material_slots": [
                 material.name for material in materials if material is not None
             ],
+            "evaluated_material_distribution": evaluated_distribution,
+            "material_triangle_counts": dict(sorted(
+                material_triangle_counts.items(), key=lambda item: item[0].casefold(),
+            )),
         }
     finally:
         evaluated.to_mesh_clear()
+
+
+def _evaluated_material_surface(obj) -> dict:
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    evaluated = obj.evaluated_get(depsgraph)
+    mesh = evaluated.to_mesh(preserve_all_data_layers=True, depsgraph=depsgraph)
+    if mesh is None:
+        raise ToolchainError(
+            "EXPORT", "export.source_material_eval",
+            "Could not evaluate the source object for material auditing",
+            {"object": obj.name},
+        )
+    try:
+        if not len(mesh.materials):
+            for slot in obj.material_slots:
+                mesh.materials.append(slot.material)
+        usage = inspect_mesh_material_usage(mesh)
+        return {
+            "vertices": len(mesh.vertices),
+            "polygons": len(mesh.polygons),
+            "triangles": usage.triangles,
+            "materials": list(usage.distribution),
+            "invalid_material_indices": list(usage.invalid_indices),
+        }
+    finally:
+        evaluated.to_mesh_clear()
+
+
+def _validate_static_material_export(
+    contract: dict,
+    obj,
+    facts: dict,
+) -> dict | None:
+    audit = contract.get(STATIC_MATERIAL_AUDIT_FIELD)
+    if not isinstance(audit, dict) or audit.get("prepared_object") != obj.name:
+        return None
+    source = bpy.data.objects.get(audit["source_object"])
+    failures = []
+    if source is None or source.type != "MESH":
+        source_actual = {}
+        failures.append({"surface": "source_evaluated", "reason": "source_object_missing"})
+    else:
+        source_actual = _evaluated_material_surface(source)
+    source_expected = distribution_projection(
+        audit["source_evaluated"].get("materials", []),
+        include_material=True,
+        include_token=False,
+    )
+    source_distribution = distribution_projection(
+        source_actual.get("materials", []),
+        include_material=True,
+        include_token=False,
+    )
+    prepared_expected = distribution_projection(
+        audit["prepared"].get("materials", []),
+        include_material=False,
+        include_token=True,
+    )
+    prepared_actual = distribution_projection(
+        facts.get("evaluated_material_distribution", []),
+        include_material=False,
+        include_token=True,
+    )
+    expected_smd = aggregate_token_triangles(audit["prepared"].get("materials", []))
+    actual_smd = {
+        str(token): int(count)
+        for token, count in facts.get("material_triangle_counts", {}).items()
+    }
+    if source_expected != source_distribution:
+        failures.append({"surface": "source_evaluated", "reason": "material_distribution_changed"})
+    if prepared_expected != prepared_actual:
+        failures.append({"surface": "prepared", "reason": "material_distribution_changed"})
+    if expected_smd != actual_smd:
+        failures.append({"surface": "smd", "reason": "logical_token_triangle_count_changed"})
+    expected_source_counts = {
+        key: int(audit["source_evaluated"].get(key, 0))
+        for key in ("vertices", "polygons", "triangles")
+    }
+    actual_source_counts = {
+        key: int(source_actual.get(key, 0))
+        for key in ("vertices", "polygons", "triangles")
+    }
+    if expected_source_counts != actual_source_counts:
+        failures.append({"surface": "source_evaluated", "reason": "geometry_counts_changed"})
+    if int(audit["prepared"].get("triangles", 0)) != int(facts.get("triangles", 0)):
+        failures.append({"surface": "smd", "reason": "author_triangle_count_changed"})
+    if source_actual.get("invalid_material_indices"):
+        failures.append({
+            "surface": "source_evaluated", "reason": "invalid_material_indices",
+            "indices": source_actual["invalid_material_indices"],
+        })
+    result = {
+        "status": "pass" if not failures else "fail",
+        "source_object": audit["source_object"],
+        "prepared_object": obj.name,
+        "source_evaluated_materials": source_distribution,
+        "prepared_materials": prepared_actual,
+        "smd_logical_token_triangles": actual_smd,
+        "failures": failures,
+    }
+    if failures:
+        raise ToolchainError(
+            "EXPORT", "export.static_material_mapping",
+            "Source, prepared, and SMD material distributions do not match",
+            result,
+        )
+    return result
 
 
 def _export_reference(path: Path, contract: dict, obj, armature) -> dict:
@@ -289,6 +408,9 @@ def _export_reference(path: Path, contract: dict, obj, armature) -> dict:
         bone_ids = _write_nodes(handle, contract)
         _write_skeleton(handle, contract, [(0, _rest_matrices(contract, armature))], bone_ids)
         facts = _write_triangles(handle, obj, contract, bone_ids)
+        facts["static_material_audit"] = _validate_static_material_export(
+            contract, obj, facts,
+        )
     document = read_smd(path)
     issues = validate_smd(document, require_triangles=True)
     if issues:
@@ -382,6 +504,11 @@ def _prepare_reference_parts(path: Path, contract: dict, artifact_root: Path, co
     return {
         "source": source_names[0],
         "compiled_sources": source_names,
+        "materials": sorted(document.materials),
+        "material_triangle_counts": dict(sorted({
+            material: sum(1 for triangle in document.triangles if triangle.material == material)
+            for material in document.materials
+        }.items(), key=lambda item: item[0].casefold())),
         "parts": [
             {
                 "path": source_names[index],
@@ -446,6 +573,9 @@ def _texture_image(texture: dict):
             if isinstance(key, str):
                 wanted.add(Path(key).name.casefold())
     for image in bpy.data.images:
+        custom = image.get("goldsrc_texture_token")
+        if isinstance(custom, str) and custom.casefold() == texture["name"].casefold():
+            return image
         candidates = {image.name.casefold(), Path(bpy.path.abspath(image.filepath or image.name)).name.casefold()}
         if wanted & candidates:
             return image
@@ -459,23 +589,48 @@ def _texture_image(texture: dict):
     return None
 
 
+def _finalize_texture_facts(
+    texture: dict,
+    facts: dict,
+    *,
+    require_masked_pixels: bool,
+) -> dict:
+    facts = {
+        **facts,
+        "required_masked_pixels": require_masked_pixels,
+        "compiled": True,
+        "omitted_unused_large_tile": False,
+    }
+    hard_risks = sorted(set(facts["risk_labels"]) & {"no_visible_pixels", "all_visible_pixels_black"})
+    if hard_risks:
+        raise ToolchainError(
+            "EXPORT", "export.texture_luminance", "Exported indexed texture has no usable visible luminance",
+            {"texture": texture["name"], "risk_labels": hard_risks},
+        )
+    return facts
+
+
 def _export_texture(root: Path, texture: dict) -> dict:
     destination = _artifact_path(root, texture["source"], "EXPORT")
+    modes = texture.get("modes", [])
+    require_masked_pixels = bool(texture.get("require_masked_pixels", True))
     image = _texture_image(texture)
     if image is None:
         if destination.is_file():
-            return validate_indexed_bmp(
-                destination, width=texture["width"], height=texture["height"], modes=texture.get("modes", []),
-                require_masked_pixels=texture.get("require_masked_pixels", True),
+            facts = validate_indexed_bmp(
+                destination, width=texture["width"], height=texture["height"], modes=modes,
+                require_masked_pixels=require_masked_pixels,
+            )
+            return _finalize_texture_facts(
+                texture, facts,
+                require_masked_pixels=require_masked_pixels,
             )
         raise ToolchainError(
             "EXPORT", "export.texture_image", "Contract texture has no Blender image and no valid artifact",
             {"texture": texture["name"]},
         )
     image.update()
-    modes = texture.get("modes", [])
     alpha_threshold = int(texture.get("alpha_threshold", 128))
-    require_masked_pixels = bool(texture.get("require_masked_pixels", True))
     atlas = texture.get("_large_texture")
     if isinstance(atlas, dict):
         source_width = int(atlas["width"])
@@ -508,13 +663,10 @@ def _export_texture(root: Path, texture: dict) -> dict:
             "atlas": atlas["name"], "source_dimensions": [source_width, source_height],
             "tile": [tile_x, tile_y], "tile_size": tile_size,
         }
-        hard_risks = sorted(set(facts["risk_labels"]) & {"no_visible_pixels", "all_visible_pixels_black"})
-        if hard_risks:
-            raise ToolchainError(
-                "EXPORT", "export.texture_luminance", "Exported indexed texture has no usable visible luminance",
-                {"texture": texture["name"], "risk_labels": hard_risks},
-            )
-        return {**facts, "required_masked_pixels": require_masked_pixels}
+        return _finalize_texture_facts(
+            texture, facts,
+            require_masked_pixels=require_masked_pixels,
+        )
     filepath = bpy.path.abspath(image.filepath or "")
     disk_source = Path(filepath).expanduser().resolve() if filepath else None
     if (
@@ -549,17 +701,10 @@ def _export_texture(root: Path, texture: dict) -> dict:
         finally:
             if copy is not None:
                 bpy.data.images.remove(copy)
-    facts = {
-        **facts,
-        "required_masked_pixels": require_masked_pixels,
-    }
-    hard_risks = sorted(set(facts["risk_labels"]) & {"no_visible_pixels", "all_visible_pixels_black"})
-    if hard_risks:
-        raise ToolchainError(
-            "EXPORT", "export.texture_luminance", "Exported indexed texture has no usable visible luminance",
-            {"texture": texture["name"], "risk_labels": hard_risks},
-        )
-    return facts
+    return _finalize_texture_facts(
+        texture, facts,
+        require_masked_pixels=require_masked_pixels,
+    )
 
 
 def _requirement_evidence(contract: dict, phase: str, evidence: dict) -> list[dict]:
@@ -568,7 +713,7 @@ def _requirement_evidence(contract: dict, phase: str, evidence: dict) -> list[di
             "id": requirement["id"],
             "status": "pass",
             "summary": f"{phase} resolved the contract-owned Blender data and artifacts",
-            "evidence": evidence,
+            "evidence": requirement_report_reference(),
         }
         for requirement in contract.get("intent", {}).get("requirements", [])
         if phase in requirement.get("evidence_phases", [])
@@ -635,11 +780,28 @@ def export_contract(contract_path: str | Path, artifacts_dir: str | Path) -> dic
         if armature and previous_action:
             _bind_action(armature, previous_action)
         scene.frame_set(previous_frame)
-    textures = [{"name": texture["name"], **_export_texture(root, texture)} for texture in contract["textures"]]
+    plan = build_export_plan(contract, export_plan)
+    omitted_tiles = {
+        name.casefold()
+        for name in plan["textures"]["omitted_unused_large_tiles"]
+    }
+    textures = []
+    for texture in contract["textures"]:
+        if texture["name"].casefold() in omitted_tiles:
+            textures.append({
+                "name": texture["name"],
+                "path": str(_artifact_path(root, texture["source"], "EXPORT")),
+                "compiled": False,
+                "omitted_unused_large_tile": True,
+                "conversion_skipped": True,
+            })
+            continue
+        textures.append({"name": texture["name"], **_export_texture(root, texture)})
     plan_path = _artifact_path(root, contract["outputs"].get("export_plan", "export_plan.json"), "EXPORT")
-    plan_path.write_text(json.dumps({"version": 1, "references": export_plan}, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    qc = write_qc(contract, root)
-    load_contract(contract_path, artifact_dir=root, require_files=True)
+    plan_path.write_text(json.dumps(plan, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    effective_contract = apply_export_plan_data(contract, plan, root, phase="EXPORT")
+    qc = write_qc(effective_contract, root)
+    validate_contract(effective_contract, artifact_dir=root, require_files=True)
     evidence = {
         "objects": [obj.name for _source, obj, _label in resolved],
         "actions": [sequence["action"] for sequence in contract["sequences"]],
@@ -648,7 +810,8 @@ def export_contract(contract_path: str | Path, artifacts_dir: str | Path) -> dic
         "textures": [
             {
                 "name": item["name"],
-                "used_color_count": item["used_color_count"],
+                "compiled": item["compiled"],
+                "used_color_count": item.get("used_color_count"),
                 "conversion_method": item.get("conversion", {}).get("method"),
                 "fidelity": item.get("conversion", {}).get("fidelity"),
             }
@@ -664,6 +827,8 @@ def export_contract(contract_path: str | Path, artifacts_dir: str | Path) -> dic
         "animations": animations,
         "textures": textures,
         "export_plan": str(plan_path),
+        "texture_selection": plan["textures"],
         "qc": str(qc),
+        "facts": evidence,
         "requirement_evidence": _requirement_evidence(contract, "export", evidence),
     }

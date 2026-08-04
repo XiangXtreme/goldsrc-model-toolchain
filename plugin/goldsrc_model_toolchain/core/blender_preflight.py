@@ -9,6 +9,13 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from .material_mapping import (
+    STATIC_MATERIAL_AUDIT_FIELD,
+    STATIC_MATERIAL_AUDIT_PROPERTY,
+    distribution_projection,
+    inspect_mesh_material_usage,
+)
+from .material_tokens import resolve_texture_token
 from .model_contract import load_contract, validate_contract
 from .smd import GOLDSRC_MAX_MODEL_TRIANGLES, GOLDSRC_MAX_MODEL_VERTICES
 
@@ -25,10 +32,28 @@ def _material_image_hints(material: Any) -> list[str]:
     if not material or not material.use_nodes:
         return []
     return sorted({
-        Path(node.image.filepath).name
+        value
         for node in material.node_tree.nodes
-        if node.type == "TEX_IMAGE" and node.image and node.image.filepath
+        if node.type == "TEX_IMAGE" and node.image
+        for value in (
+            getattr(node.image, "name", ""),
+            Path(getattr(node.image, "filepath", "")).name,
+        )
+        if value
     })
+
+
+def _material_token_candidates(material: Any) -> list[str]:
+    candidates = []
+    getter = getattr(material, "get", None)
+    custom = getter("goldsrc_texture_token") if callable(getter) else None
+    if isinstance(custom, str):
+        candidates.append(custom)
+    candidates.extend(_material_image_hints(material))
+    name = getattr(material, "name", None)
+    if isinstance(name, str):
+        candidates.extend((name, name + ".bmp"))
+    return candidates
 
 
 def _uv_layer_state(uv_layers: Any) -> dict[str, Any]:
@@ -92,6 +117,11 @@ def _evaluated_surface_facts(obj: Any, bpy: Any) -> dict[str, Any]:
         "uv_bounds": None,
         "uv_nonfinite": 0,
         "material_slots": [],
+        "material_distribution": [],
+        "invalid_material_indices": [],
+        "vertices": 0,
+        "polygons": 0,
+        "triangles": 0,
     }
     try:
         depsgraph = bpy.context.evaluated_depsgraph_get()
@@ -101,6 +131,8 @@ def _evaluated_surface_facts(obj: Any, bpy: Any) -> dict[str, Any]:
         return facts
     try:
         facts["available"] = True
+        facts["vertices"] = len(getattr(mesh, "vertices", ()))
+        facts["polygons"] = len(getattr(mesh, "polygons", ()))
         uv_layers = getattr(mesh, "uv_layers", None)
         uv_state = _uv_layer_state(uv_layers)
         facts["uv_layers"] = uv_state["layers"]
@@ -131,12 +163,119 @@ def _evaluated_surface_facts(obj: Any, bpy: Any) -> dict[str, Any]:
                     "max": [max(value[0] for value in coordinates), max(value[1] for value in coordinates)],
                 }
         materials = getattr(mesh, "materials", ())
+        if not len(materials):
+            for slot in getattr(obj, "material_slots", ()):
+                materials.append(slot.material)
+        usage = inspect_mesh_material_usage(mesh)
         facts["material_slots"] = [
             getattr(material, "name", None) for material in materials if material is not None
         ]
+        facts["material_distribution"] = list(usage.distribution)
+        facts["invalid_material_indices"] = list(usage.invalid_indices)
+        facts["triangles"] = usage.triangles
     finally:
         evaluated.to_mesh_clear()
     return facts
+
+
+def _audit_surface_counts(surface: dict[str, Any]) -> dict[str, int]:
+    return {
+        "vertices": int(surface.get("vertices", 0)),
+        "polygons": int(surface.get("polygons", 0)),
+        "triangles": int(surface.get("triangles", 0)),
+    }
+
+
+def _inspect_static_material_audit(
+    contract: dict[str, Any],
+    bpy: Any,
+    mesh_facts: list[dict[str, Any]],
+    issues: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    audit = contract.get(STATIC_MATERIAL_AUDIT_FIELD)
+    if not isinstance(audit, dict):
+        return None
+    prepared_name = audit["prepared_object"]
+    source_name = audit["source_object"]
+    prepared = next((item for item in mesh_facts if item["name"] == prepared_name), None)
+    source_object = bpy.data.objects.get(source_name)
+    failures = []
+
+    if prepared is None:
+        failures.append({"surface": "prepared", "reason": "contract_object_missing"})
+        prepared_surface = {}
+    else:
+        prepared_surface = prepared.get("evaluated_surface") or {}
+        stored = bpy.data.objects.get(prepared_name).get(STATIC_MATERIAL_AUDIT_PROPERTY)
+        try:
+            stored_audit = json.loads(stored) if isinstance(stored, str) else None
+        except json.JSONDecodeError:
+            stored_audit = None
+        if stored_audit != audit:
+            failures.append({"surface": "prepared", "reason": "object_audit_property_mismatch"})
+
+    if source_object is None or getattr(source_object, "type", None) != "MESH":
+        failures.append({"surface": "source_evaluated", "reason": "source_object_missing"})
+        source_surface = {}
+    else:
+        source_surface = _evaluated_surface_facts(source_object, bpy)
+
+    source_expected = distribution_projection(
+        audit["source_evaluated"].get("materials", []),
+        include_material=True,
+        include_token=False,
+    )
+    source_actual = distribution_projection(
+        source_surface.get("material_distribution", []),
+        include_material=True,
+        include_token=False,
+    )
+    prepared_expected = distribution_projection(
+        audit["prepared"].get("materials", []),
+        include_material=False,
+        include_token=True,
+    )
+    prepared_actual = distribution_projection(
+        prepared_surface.get("material_distribution", []),
+        include_material=False,
+        include_token=True,
+    )
+    if source_expected != source_actual:
+        failures.append({"surface": "source_evaluated", "reason": "material_distribution_changed"})
+    if prepared_expected != prepared_actual:
+        failures.append({"surface": "prepared", "reason": "material_distribution_changed"})
+    if _audit_surface_counts(audit["source_evaluated"]) != _audit_surface_counts(source_surface):
+        failures.append({"surface": "source_evaluated", "reason": "geometry_counts_changed"})
+    if _audit_surface_counts(audit["prepared"]) != _audit_surface_counts(prepared_surface):
+        failures.append({"surface": "prepared", "reason": "geometry_counts_changed"})
+    if source_surface.get("invalid_material_indices"):
+        failures.append({
+            "surface": "source_evaluated", "reason": "invalid_material_indices",
+            "indices": source_surface["invalid_material_indices"],
+        })
+    if prepared_surface.get("invalid_material_indices"):
+        failures.append({
+            "surface": "prepared", "reason": "invalid_material_indices",
+            "indices": prepared_surface["invalid_material_indices"],
+        })
+
+    status = "pass" if not failures else "fail"
+    fact = {
+        "status": status,
+        "source_object": source_name,
+        "prepared_object": prepared_name,
+        "source_evaluated_materials": source_actual,
+        "prepared_materials": prepared_actual,
+        "old_to_new": audit.get("old_to_new", []),
+        "failures": failures,
+    }
+    if failures:
+        issues.append(_issue(
+            "static.evaluated_material_mapping",
+            "Prepared material surfaces do not match the selected evaluated source",
+            **fact,
+        ))
+    return fact
 
 
 def _bounds_facts(obj: Any) -> dict[str, Any]:
@@ -208,17 +347,6 @@ def inspect_scene(contract: dict[str, Any], *, bpy_module=None) -> dict[str, Any
         issues.append(_issue("scene.no_meshes", "no exported mesh objects were found"))
 
     bone_names = {bone["name"] for bone in contract["bones"]}
-    declared_materials = {
-        value
-        for texture in contract["textures"]
-        for value in (texture["name"], Path(texture["name"]).stem)
-    }
-    declared_materials.update(
-        value
-        for atlas in contract.get("large_textures", [])
-        if isinstance(atlas, dict) and isinstance(atlas.get("name"), str)
-        for value in (atlas["name"], Path(atlas["name"]).stem)
-    )
     texture_bake = contract.get("texture_bake")
     texture_bake_uv = texture_bake.get("uv_layer") if isinstance(texture_bake, dict) else None
     require_active_render = texture_bake.get("require_active_render", True) if isinstance(texture_bake, dict) else False
@@ -256,7 +384,14 @@ def inspect_scene(contract: dict[str, Any], *, bpy_module=None) -> dict[str, Any
             issues.append(_issue("mesh.rotation", f"apply rotation on {obj.name}", object=obj.name, rotation=list(obj.rotation_euler)))
         non_triangles = sum(len(polygon.vertices) != 3 for polygon in obj.data.polygons)
         if non_triangles:
-            issues.append(_issue("mesh.non_triangles", f"{obj.name} contains {non_triangles} non-triangle polygons", object=obj.name, count=non_triangles))
+            issues.append(_issue(
+                "mesh.non_triangles",
+                f"{obj.name} contains {non_triangles} non-triangle polygons; EXPORT triangulates the evaluated mesh",
+                severity="warning",
+                object=obj.name,
+                count=non_triangles,
+                export_triangulates=True,
+            ))
         if not obj.data.uv_layers or obj.data.uv_layers.active is None:
             issues.append(_issue("mesh.uv_missing", f"{obj.name} has no active UV layer", object=obj.name))
         if raw_uv_state["active_uv"] and raw_uv_state["active_render_uv"] and raw_uv_state["active_uv"] != raw_uv_state["active_render_uv"]:
@@ -344,10 +479,17 @@ def inspect_scene(contract: dict[str, Any], *, bpy_module=None) -> dict[str, Any
                         target_uv=texture_bake_uv,
                         active_render_uv=state["active_render_uv"],
                     ))
-        materials = [slot.material.name for slot in obj.material_slots if slot.material]
+        material_slots = [slot.material for slot in obj.material_slots if slot.material]
+        materials = [material.name for material in material_slots]
         if not materials:
             issues.append(_issue("mesh.material_missing", f"{obj.name} has no material", object=obj.name))
-        unknown_materials = sorted(set(materials) - declared_materials)
+        resolved_materials = {
+            material.name: resolve_texture_token(_material_token_candidates(material), contract)
+            for material in material_slots
+        }
+        unknown_materials = sorted(
+            name for name, token in resolved_materials.items() if token is None
+        )
         if unknown_materials:
             material_hints = {
                 material_name: _material_image_hints(bpy.data.materials.get(material_name))
@@ -359,7 +501,12 @@ def inspect_scene(contract: dict[str, Any], *, bpy_module=None) -> dict[str, Any
                 object=obj.name,
                 materials=unknown_materials,
                 image_filename_hints=material_hints,
-                declared_materials=sorted(declared_materials),
+                token_candidates={
+                    material.name: _material_token_candidates(material)
+                    for material in material_slots
+                    if material.name in unknown_materials
+                },
+                declared_materials=sorted(texture["name"] for texture in contract["textures"]),
             ))
         group_names = {group.index: group.name for group in obj.vertex_groups}
         unweighted = 0
@@ -388,6 +535,7 @@ def inspect_scene(contract: dict[str, Any], *, bpy_module=None) -> dict[str, Any
             "evaluated_polygons": evaluated_polygons,
             "evaluated_triangles": evaluated_triangles,
             "materials": materials,
+            "material_tokens": resolved_materials,
             "unweighted": unweighted,
             "multiweighted": multiweighted,
             "raw_uv": raw_uv_state,
@@ -399,7 +547,32 @@ def inspect_scene(contract: dict[str, Any], *, bpy_module=None) -> dict[str, Any
             **_bounds_facts(obj),
         })
 
-    armatures = [obj for obj in bpy.context.scene.objects if obj.type == "ARMATURE"]
+    static_material_audit = _inspect_static_material_audit(
+        contract, bpy, mesh_facts, issues,
+    )
+
+    armatures = []
+    seen_armatures = set()
+    for mesh in meshes:
+        candidates = []
+        parent = getattr(mesh, "parent", None)
+        if parent and parent.type == "ARMATURE":
+            candidates.append(parent)
+        candidates.extend(
+            modifier.object for modifier in getattr(mesh, "modifiers", ())
+            if modifier.type == "ARMATURE" and modifier.object is not None
+        )
+        for armature in candidates:
+            if armature.name not in seen_armatures:
+                seen_armatures.add(armature.name)
+                armatures.append(armature)
+    if not armatures:
+        scene_armatures = [
+            obj for obj in bpy.context.scene.objects
+            if getattr(obj, "type", None) == "ARMATURE"
+        ]
+        if len(scene_armatures) == 1:
+            armatures = scene_armatures
     if not armatures:
         issues.append(_issue("armature.missing", "a root bone and armature are required for GoldSrc export"))
     else:
@@ -477,6 +650,7 @@ def inspect_scene(contract: dict[str, Any], *, bpy_module=None) -> dict[str, Any
         "issues": issues,
         "facts": {
             "meshes": mesh_facts,
+            "static_material_audit": static_material_audit,
             "armatures": len(armatures),
             "actions": sorted(actions),
             "playback": {

@@ -354,7 +354,7 @@ class Texture:
             palette = np.frombuffer(buffer.read(256 * 3), dtype=np.uint8).reshape((-1, 3)).copy()
             rgba_palette = np.concatenate((palette, np.full((256, 1), 255, dtype=np.uint8)), axis=1)
             rgba = rgba_palette[indices].reshape((height, width, 4))
-            if "{" in name:
+            if "{" in name or flags & 0x0040:
                 rgba[indices.reshape((height, width)) == 255, 3] = 0
             rgba = np.flip(rgba, axis=0).copy()
         return cls(

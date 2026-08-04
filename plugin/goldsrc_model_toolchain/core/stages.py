@@ -2,54 +2,32 @@
 
 from __future__ import annotations
 
-import json
 import subprocess
 from pathlib import Path
 
 from .compatibility import compare_model_compatibility
 from .errors import ToolchainError
+from .export_plan import apply_export_plan
 from .mdl_v10 import compare_mdl_sequence_to_smd, inspect_mdl, validate_mdl_contract
-from .model_contract import ContractError, load_contract, write_qc
+from .model_contract import ContractError, load_contract, validate_contract, write_qc
 from .paths import resolve_artifact_root, resolve_toolchain
+from .reporting import requirement_report_reference
 from .smd import animation_budget_hint, audit_loop_endpoint, read_smd
 
 
 PUBLIC_STAGES = ("PREFLIGHT", "EXPORT", "COMPILE", "INSPECT", "ROUNDTRIP")
 
 
-def _apply_export_plan(contract: dict, root: Path) -> dict:
-    """Apply export-time SMD body parts before QC generation and MDL inspection."""
+def _apply_export_plan(contract: dict, root: Path, *, phase: str = "COMPILE") -> dict:
+    """Compatibility wrapper for the shared export-plan implementation."""
 
-    plan_path = (root / contract.get("outputs", {}).get("export_plan", "export_plan.json")).resolve()
-    if root not in plan_path.parents or not plan_path.is_file():
-        return contract
-    try:
-        plan = json.loads(plan_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ToolchainError("COMPILE", "compile.export_plan", f"invalid export plan: {exc}") from exc
-    references = plan.get("references", [])
-    by_source = {
-        str(item.get("contract_source", "")).casefold(): item
-        for item in references
-        if isinstance(item, dict)
-    }
-    for body in contract.get("bodies", []):
-        item = by_source.get(str(body.get("source", "")).casefold())
-        if item is None:
-            item = by_source.get(Path(str(body.get("source", ""))).name.casefold())
-        sources = item.get("compiled_sources") if isinstance(item, dict) else None
-        if not isinstance(sources, list) or not sources:
-            continue
-        normalized = []
-        for source in sources:
-            if not isinstance(source, str) or not source.lower().endswith(".smd"):
-                raise ToolchainError("COMPILE", "compile.export_plan", "export plan contains an invalid SMD source")
-            path = (root / source).resolve()
-            if root not in path.parents or not path.is_file():
-                raise ToolchainError("COMPILE", "compile.export_plan", "export plan references a missing SMD", {"source": source})
-            normalized.append(source)
-        body["_compiled_sources"] = normalized
-    return contract
+    return apply_export_plan(contract, root, phase=phase)
+
+
+def _load_effective_contract(contract_path: str | Path, root: Path, *, phase: str) -> dict:
+    contract = load_contract(contract_path, artifact_dir=root, require_files=False)
+    contract = _apply_export_plan(contract, root, phase=phase)
+    return validate_contract(contract, artifact_dir=root, require_files=True)
 
 
 def _requirements(
@@ -64,7 +42,10 @@ def _requirements(
     if evidence_status == "fail":
         summary = f"{summary}; stage did not pass"
     return [
-        {"id": item["id"], "status": evidence_status, "summary": summary, "evidence": evidence}
+        {
+            "id": item["id"], "status": evidence_status, "summary": summary,
+            "evidence": requirement_report_reference(),
+        }
         for item in contract.get("intent", {}).get("requirements", [])
         if phase in item.get("evidence_phases", [])
     ]
@@ -92,8 +73,7 @@ def run_export(contract_path: str | Path, artifacts_dir: str | Path) -> dict:
 
 def run_compile(contract_path: str | Path, artifacts_dir: str | Path) -> dict:
     root = Path(artifacts_dir).expanduser().resolve()
-    contract = load_contract(contract_path, artifact_dir=root, require_files=True)
-    contract = _apply_export_plan(contract, root)
+    contract = _load_effective_contract(contract_path, root, phase="COMPILE")
     compiler = resolve_toolchain().sven_studiomdl
     if compiler is None or not compiler.is_file():
         raise ToolchainError("COMPILE", "compile.compiler", "Sven StudioMDL is missing")
@@ -153,6 +133,7 @@ def run_compile(contract_path: str | Path, artifacts_dir: str | Path) -> dict:
         "stderr": completed.stderr[-12000:],
         "inspection": inspection,
         "issues": [],
+        "facts": evidence,
         "requirement_evidence": _requirements(
             contract, "compile_sven", "Sven StudioMDL compiled the contract artifacts", evidence,
         ),
@@ -161,8 +142,7 @@ def run_compile(contract_path: str | Path, artifacts_dir: str | Path) -> dict:
 
 def run_inspect(contract_path: str | Path, artifacts_dir: str | Path) -> dict:
     root = Path(artifacts_dir).expanduser().resolve()
-    contract = load_contract(contract_path, artifact_dir=root, require_files=True)
-    contract = _apply_export_plan(contract, root)
+    contract = _load_effective_contract(contract_path, root, phase="INSPECT")
     mdl_path = (root / contract["outputs"]["sven_mdl"]).resolve()
     inspection = inspect_mdl(mdl_path)
     issues = validate_mdl_contract(inspection, contract)
@@ -208,19 +188,35 @@ def run_inspect(contract_path: str | Path, artifacts_dir: str | Path) -> dict:
         "inspections": {"sven": inspection},
         "animation_audits": {"sven": audits},
         "compatibility": compatibility_report,
+        "facts": evidence,
         "requirement_evidence": _requirements(
             contract, "mdl_inspect", "Independent MDL v10 inspection matched contract and source SMD motion", evidence,
         ),
     }
 
 
-def run_roundtrip(contract_path: str | Path, artifacts_dir: str | Path) -> dict:
+def run_roundtrip(
+    contract_path: str | Path,
+    artifacts_dir: str | Path,
+    *,
+    evidence_dir: str | Path | None = None,
+) -> dict:
     from ..blender.roundtrip import run_roundtrip as blender_roundtrip
 
-    return blender_roundtrip(contract_path, artifacts_dir)
+    root = Path(artifacts_dir).expanduser().resolve()
+    contract = _load_effective_contract(contract_path, root, phase="ROUNDTRIP")
+    return blender_roundtrip(
+        contract_path, root, effective_contract=contract, evidence_dir=evidence_dir,
+    )
 
 
-def execute_stage(stage: str, contract_path: str | Path, artifacts_dir: str | Path) -> dict:
+def execute_stage(
+    stage: str,
+    contract_path: str | Path,
+    artifacts_dir: str | Path,
+    *,
+    roundtrip_evidence_dir: str | Path | None = None,
+) -> dict:
     normalized = str(stage).upper()
     if normalized not in PUBLIC_STAGES:
         raise ToolchainError("OPERATOR", "stage.unsupported", "Unsupported GoldSrc stage", {"stage": stage})
@@ -238,6 +234,10 @@ def execute_stage(stage: str, contract_path: str | Path, artifacts_dir: str | Pa
         "ROUNDTRIP": run_roundtrip,
     }
     try:
+        if normalized == "ROUNDTRIP":
+            return run_roundtrip(
+                contract_path, artifacts, evidence_dir=roundtrip_evidence_dir,
+            )
         return runners[normalized](contract_path, artifacts)
     except ToolchainError:
         raise

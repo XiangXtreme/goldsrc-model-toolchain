@@ -183,6 +183,32 @@ class BlenderPreflightTests(unittest.TestCase):
                 self.assertEqual(budget["severity"], "warning")
                 self.assertTrue(budget["context"]["export_split"])
 
+    def test_custom_texture_token_matches_export_material_resolution(self) -> None:
+        bpy = fake_scene()
+        material = bpy.data.materials[0]
+        material.name = "TerrainBase"
+        material.get = lambda key: "base.bmp" if key == "goldsrc_texture_token" else None
+
+        report = inspect_scene(base_contract(), bpy_module=bpy)
+
+        self.assertEqual(report["status"], "pass", report["issues"])
+        self.assertNotIn("mesh.material_unknown", {item["code"] for item in report["issues"]})
+        self.assertEqual(
+            report["facts"]["meshes"][0]["material_tokens"],
+            {"TerrainBase": "base.bmp"},
+        )
+
+    def test_non_triangles_are_export_triangulation_warnings(self) -> None:
+        bpy = fake_scene()
+        bpy.context.scene.objects[0].data.polygons[0].vertices = (0, 1, 2, 3)
+
+        report = inspect_scene(base_contract(), bpy_module=bpy)
+
+        issue = next(item for item in report["issues"] if item["code"] == "mesh.non_triangles")
+        self.assertEqual(report["status"], "pass")
+        self.assertEqual(issue["severity"], "warning")
+        self.assertTrue(issue["context"]["export_triangulates"])
+
     def test_playback_requires_bound_action_and_start_frame(self) -> None:
         report = inspect_scene(base_contract(), bpy_module=fake_scene(frame_current=12, action_bound=False))
         codes = {item["code"] for item in report["issues"]}

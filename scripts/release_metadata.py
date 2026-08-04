@@ -17,7 +17,13 @@ def load_plugin_manifest(root: Path = REPO_ROOT) -> dict:
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise ValueError(f"cannot read Extension manifest: {manifest_path}: {exc}") from exc
     version = manifest.get("version")
-    if not isinstance(version, str) or not re.fullmatch(r"\d+\.\d+\.\d+", version):
+    semver = (
+        r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
+        r"(?:-(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)"
+        r"(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*)?"
+        r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+    )
+    if not isinstance(version, str) or not re.fullmatch(semver, version):
         raise ValueError(f"Extension manifest has invalid version: {version!r}")
     return manifest
 

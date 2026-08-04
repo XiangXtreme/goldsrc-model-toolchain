@@ -19,6 +19,22 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def decoded_pixel_sha256(path: str | Path) -> str:
+    """Hash decoded RGBA pixels so PNG encoding metadata cannot mimic motion."""
+
+    source = Path(path).expanduser().resolve()
+    with Image.open(source) as opened:
+        rgba = opened.convert("RGBA")
+        width, height = rgba.size
+        pixels = rgba.tobytes()
+    digest = hashlib.sha256()
+    digest.update(b"RGBA\0")
+    digest.update(width.to_bytes(8, "little", signed=False))
+    digest.update(height.to_bytes(8, "little", signed=False))
+    digest.update(pixels)
+    return digest.hexdigest()
+
+
 def _font(size: int):
     try:
         return ImageFont.truetype("DejaVuSans.ttf", size=size)
@@ -137,6 +153,7 @@ def create_labeled_contact_sheet(
             "column": column,
             "source_path": str(source),
             "source_sha256": _sha256(source),
+            "source_pixel_sha256": decoded_pixel_sha256(source),
             "source_size": original_size,
             "image_rect": image_rect,
             "contained_rect": [
@@ -157,6 +174,7 @@ def create_labeled_contact_sheet(
         "path": str(output),
         "layout_path": str(sidecar),
         "sha256": _sha256(output),
+        "pixel_sha256": decoded_pixel_sha256(output),
         "bytes": output.stat().st_size,
         "size": [sheet_width, sheet_height],
         "rows": rows,

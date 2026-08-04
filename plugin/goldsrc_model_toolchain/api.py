@@ -7,6 +7,7 @@ from uuid import uuid4
 import hashlib
 
 from .blender.mdl_import import import_mdl as _import_mdl
+from .blender.isolated_roundtrip import run_isolated_roundtrip
 from .blender.smd_import import import_smd as _import_smd, import_smd_animation as _import_smd_animation
 from .core.blender_namespace import assert_exact_asset_namespace, purge_asset_namespace
 from .core.compatibility import validate_model_compatibility, validate_player_portrait
@@ -22,6 +23,12 @@ from .core.large_textures import (
 from .core.mdl_v10 import inspect_mdl
 from .core.model_contract import load_contract
 from .core.paths import ensure_outside_skill_tree
+from .core.reporting import (
+    failure_report,
+    resolve_report_path,
+    summarize_stage_report,
+    write_json,
+)
 from .core.physics_config import configure_rigidbody_world
 from .core.rigidbody_bake import (
     apply_rigidbody_world_transform,
@@ -32,6 +39,7 @@ from .core.rigidbody_bake import (
     write_capture_matrices,
 )
 from .core.stages import PUBLIC_STAGES, execute_stage
+from .core.selected_static_export import run_selected_static_export
 from .core.smd import read_smd
 from .core.textures import convert_image_tile_to_indexed_bmp, convert_to_indexed_bmp
 from .core.visual_evidence import create_labeled_contact_sheet
@@ -54,18 +62,20 @@ def _guard(phase: str, code: str, function, *args, **kwargs):
 class RuntimeAPI:
     def __init__(self) -> None:
         self._captures = {}
+        self._static_analyses = {}
 
     def capabilities(self) -> dict:
         compiler = Path(__file__).resolve().parent / "bin" / "windows-x64" / "studiomdl.exe"
         return {
             "id": "goldsrc_model_toolchain",
-            "version": "1.3.3",
+            "version": "1.4.0",
             "api_version": 1,
             "blender": "5.2.x",
             "platform": "windows-x64",
             "distribution": "public_github_release",
             "repository": "https://github.com/XiangXtreme/goldsrc-model-toolchain",
-            "release": "v1.3.3",
+            "release": "v1.4.0",
+            "public_compatibility_baseline": "v1.4.0",
             "stages": list(PUBLIC_STAGES),
             "formats": {"smd": 1, "mdl": 10, "qc": True, "indexed_bmp": True},
             "roundtrip_parser": "SourceIO 5.5.4 derived GoldSrc-only reader",
@@ -93,14 +103,28 @@ class RuntimeAPI:
                 "loop_endpoint_validation": True,
                 "bounds_aware_roundtrip_camera": True,
                 "blank_preview_rejection": True,
+                "roundtrip_decoded_pixel_hash": True,
                 "preflight_object_bounds": True,
+                "preflight_material_texture_token": True,
+                "export_time_triangulation": True,
                 "evaluated_uv_material_reports": True,
                 "texture_bake_uv_guard": True,
                 "failed_requirement_evidence": True,
+                "stage_report_persistence": True,
+                "summary_stage_results": True,
+                "isolated_roundtrip": True,
+                "static_selection_analysis": True,
+                "non_destructive_static_prepare": True,
+                "static_contract_from_scene": True,
+                "selected_static_export": True,
+                "strict_static_pipeline": True,
+                "unified_static_visual_compare": True,
+                "evaluated_material_mapping_audit": True,
                 "large_texture_tiling": {
                     "source_tile_size": 512,
                     "max_tiles_per_mdl": 64,
                     "method": "UV-clipped 512px indexed BMP tiles",
+                    "sparse_compiled_tiles": True,
                 },
                 "smd_budget_split": {
                     "compiled_vertices": 2048,
@@ -122,8 +146,161 @@ class RuntimeAPI:
             "ui": False,
         }
 
-    def execute_stage(self, stage, contract_path, artifacts_dir) -> dict:
-        return execute_stage(stage, contract_path, artifacts_dir)
+    def execute_stage(
+        self, stage, contract_path, artifacts_dir, *, detail_level="full",
+        report_path=None, preserve_author_session=True,
+    ) -> dict:
+        normalized = str(stage).upper()
+        if detail_level not in {"summary", "full"}:
+            raise ToolchainError(
+                "OPERATOR", "stage.detail_level", "detail_level must be summary or full",
+                {"detail_level": detail_level},
+            )
+        path = resolve_report_path(
+            artifacts_dir, stage=normalized, report_path=report_path,
+        )
+        try:
+            if normalized == "ROUNDTRIP" and bool(preserve_author_session):
+                result = run_isolated_roundtrip(
+                    contract_path, artifacts_dir,
+                    evidence_dir=Path(artifacts_dir).expanduser().resolve() / "roundtrip" / "primary",
+                    package_name=__package__,
+                )
+            else:
+                result = execute_stage(normalized, contract_path, artifacts_dir)
+        except ToolchainError as exc:
+            write_json(path, failure_report(exc, stage=normalized))
+            raise
+        except Exception as exc:
+            wrapped = ToolchainError(
+                normalized, "stage.unhandled", str(exc), {"type": type(exc).__name__},
+            )
+            write_json(path, failure_report(wrapped, stage=normalized))
+            raise wrapped from exc
+        write_json(path, result)
+        return summarize_stage_report(normalized, result, path) if detail_level == "summary" else result
+
+    def execute_pipeline(
+        self, contract_path, artifacts_dir, *, assurance="standard", detail_level="summary",
+        preserve_author_session=True, visual_compare=True, delivery_dir=None,
+        replace_delivery=False,
+    ) -> dict:
+        from .blender.pipeline import execute_pipeline
+
+        return execute_pipeline(
+            contract_path, artifacts_dir, assurance=assurance, detail_level=detail_level,
+            preserve_author_session=bool(preserve_author_session),
+            visual_compare=bool(visual_compare), delivery_dir=delivery_dir,
+            replace_delivery=bool(replace_delivery), package_name=__package__,
+        )
+
+    def analyze_selected_static(self, object_name=None) -> dict:
+        from .blender.static_export import analyze_selected_static
+
+        result, analysis = analyze_selected_static(object_name)
+        self._static_analyses[result["analysis_id"]] = analysis
+        return result
+
+    def prepare_static_export(
+        self, analysis_id, *, artifacts_dir, model_name, request,
+        texture_size=None, uv_strategy=None, uv_layer=None,
+        origin_strategy=None, bake_mode=None, goldsrc_modes=None,
+        target_profile="half-life-cs",
+    ) -> dict:
+        from .blender.static_export import prepare_static_export
+
+        analysis = self._static_analyses.get(str(analysis_id))
+        if analysis is None:
+            raise ToolchainError(
+                "PREPARE", "static.analysis_id",
+                "Unknown static analysis_id; analyze_selected_static must run in this Blender session",
+                {"analysis_id": str(analysis_id)},
+            )
+        return prepare_static_export(
+            analysis,
+            artifacts_dir=artifacts_dir,
+            model_name=model_name,
+            request=request,
+            texture_size=texture_size,
+            uv_strategy=uv_strategy,
+            uv_layer=uv_layer,
+            origin_strategy=origin_strategy,
+            bake_mode=bake_mode,
+            goldsrc_modes=goldsrc_modes,
+            target_profile=target_profile,
+        )
+
+    def export_selected_static(
+        self, *, artifacts_dir, model_name, request, object_name=None,
+        texture_size=None, uv_strategy=None, uv_layer=None,
+        origin_strategy=None, bake_mode=None, goldsrc_modes=None,
+        target_profile="half-life-cs", assurance="strict",
+        preserve_author_session=True, visual_compare=True,
+        delivery_dir=None, replace_delivery=False,
+    ) -> dict:
+        """Export one selected mesh through the complete compact static workflow."""
+
+        session = None
+        if preserve_author_session:
+            from .blender.static_export import capture_static_export_session
+
+            session = capture_static_export_session()
+        try:
+            return run_selected_static_export(
+                artifacts_dir=artifacts_dir,
+                analyze=lambda: self.analyze_selected_static(object_name),
+                prepare=lambda analysis: self.prepare_static_export(
+                    analysis["analysis_id"],
+                    artifacts_dir=artifacts_dir,
+                    model_name=model_name,
+                    request=request,
+                    texture_size=texture_size,
+                    uv_strategy=uv_strategy,
+                    uv_layer=uv_layer,
+                    origin_strategy=origin_strategy,
+                    bake_mode=bake_mode,
+                    goldsrc_modes=goldsrc_modes,
+                    target_profile=target_profile,
+                ),
+                execute_pipeline=lambda prepared: self.execute_pipeline(
+                    prepared["contract_path"],
+                    prepared["artifacts_dir"],
+                    assurance=assurance,
+                    detail_level="summary",
+                    preserve_author_session=bool(preserve_author_session),
+                    visual_compare=bool(visual_compare),
+                    delivery_dir=delivery_dir,
+                    replace_delivery=bool(replace_delivery),
+                ),
+            )
+        finally:
+            if session is not None:
+                from .blender.static_export import restore_static_export_session
+
+                restore_static_export_session(session)
+
+    def create_static_contract_from_scene(
+        self, artifacts_dir, model_name, request, *, object_name,
+        armature_name, action_name, uv_layer, textures=None,
+        large_textures=None, target_profile="half-life-cs",
+        contract_path=None, fps=30.0,
+    ) -> dict:
+        from .blender.static_export import create_static_contract_from_scene
+
+        return create_static_contract_from_scene(
+            artifacts_dir,
+            model_name,
+            request,
+            object_name=object_name,
+            armature_name=armature_name,
+            action_name=action_name,
+            uv_layer=uv_layer,
+            textures=textures,
+            large_textures=large_textures,
+            target_profile=target_profile,
+            contract_path=contract_path,
+            fps=float(fps),
+        )
 
     def import_smd(self, path, *, scale=1.0, action_name=None) -> dict:
         return _guard("IMPORT", "smd.import", _import_smd, path, scale=float(scale), action_name=action_name)
@@ -243,7 +420,7 @@ class RuntimeAPI:
         }
 
     def compile_contract(self, contract_path, artifacts_dir) -> dict:
-        return execute_stage("COMPILE", contract_path, artifacts_dir)
+        return self.execute_stage("COMPILE", contract_path, artifacts_dir)
 
     def inspect_mdl(self, path) -> dict:
         return _guard("INSPECT", "mdl.inspect", inspect_mdl, Path(path))

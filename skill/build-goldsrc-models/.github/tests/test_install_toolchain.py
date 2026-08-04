@@ -15,12 +15,12 @@ SPEC.loader.exec_module(INSTALLER)
 
 
 class InstallerTests(unittest.TestCase):
-    def test_release_manifest_is_pinned_to_public_v133(self) -> None:
+    def test_release_manifest_is_pinned_to_public_v140(self) -> None:
         release = INSTALLER.load_release()
         self.assertEqual(release["repository"], "https://github.com/XiangXtreme/goldsrc-model-toolchain")
-        self.assertEqual(release["tag"], "v1.3.3")
-        self.assertEqual(release["asset"], "goldsrc_model_toolchain-1.3.3-windows-x64.zip")
-        self.assertEqual(release["sha256"], "82d600a309f2e53e97085efe97f43e9be1ca76ff0df51d308fac5cae7b21415a")
+        self.assertEqual(release["tag"], "v1.4.0")
+        self.assertEqual(release["asset"], "goldsrc_model_toolchain-1.4.0-windows-x64.zip")
+        self.assertEqual(release["sha256"], "fd5ca3e4fcb0db10b3680e10f547cc33cca6b1bf8e5ed935c56cc6a5d0cd6dfb")
         self.assertEqual(release["api_version"], 1)
         self.assertRegex(release["sha256"], r"^[0-9a-f]{64}$")
 
@@ -29,10 +29,18 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(INSTALLER.version_compatibility(None, release), "missing")
         self.assertEqual(
             INSTALLER.version_compatibility({"id": "goldsrc_model_toolchain", "version": "1.3.3", "api_version": 1}, release),
-            "validated",
+            "upgrade_required",
         )
         self.assertEqual(
             INSTALLER.version_compatibility({"id": "goldsrc_model_toolchain", "version": "1.4.0", "api_version": 1}, release),
+            "validated",
+        )
+        self.assertEqual(
+            INSTALLER.version_compatibility({"id": "goldsrc_model_toolchain", "version": "1.4.0-dev", "api_version": 1}, release),
+            "upgrade_required",
+        )
+        self.assertEqual(
+            INSTALLER.version_compatibility({"id": "goldsrc_model_toolchain", "version": "1.4.1", "api_version": 1}, release),
             "compatible_unregressed_version",
         )
         self.assertEqual(
@@ -80,11 +88,27 @@ class InstallerTests(unittest.TestCase):
 
     def test_creation_guidance_precedes_tooling(self) -> None:
         skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
-        self.assertLess(skill.index("## Understand The Asset"), skill.index("## Choose Assurance"))
-        self.assertLess(skill.index("## Choose Assurance"), skill.index("## Use The External Toolchain"))
+        self.assertLess(skill.index("Keep creative decisions with the agent"), skill.index("## Check Capabilities Once"))
+        self.assertLess(skill.index("## Route The Work"), skill.index("## Check Capabilities Once"))
         self.assertIn("references/pitfalls.md", skill)
         self.assertIn("references/workflow-advanced-fx.md", skill)
         self.assertNotIn("references/production-workflow.md", skill)
+
+    def test_static_fast_path_uses_sparse_tiles_and_decoded_pixel_hashes(self) -> None:
+        skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+        static = (ROOT / "references" / "workflow-static-materials.md").read_text(encoding="utf-8")
+        validation = (ROOT / "references" / "validation.md").read_text(encoding="utf-8")
+        for phrase in (
+            "api.export_selected_static",
+            "selected_static_export",
+            "assurance=\"strict\"",
+            "physical `512x512` indexed BMP tiles",
+        ):
+            self.assertIn(phrase, skill)
+        self.assertIn("EXPORT triangulates the evaluated mesh", static)
+        self.assertIn("omitted_unused_large_tiles", static)
+        self.assertIn("Never add hidden anchor triangles", static)
+        self.assertIn("decoded RGBA `pixel_sha256`", validation)
 
     def test_advanced_workflow_and_new_pitfalls_are_routed(self) -> None:
         advanced = (ROOT / "references" / "workflow-advanced-fx.md").read_text(encoding="utf-8")

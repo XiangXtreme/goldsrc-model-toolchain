@@ -85,11 +85,17 @@ def _query_installed(blender: Path) -> dict:
     return json.loads(match.group(1))
 
 
-def _version_tuple(value: str) -> tuple[int, int, int]:
-    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", str(value))
+def _version_tuple(value: str) -> tuple[int, int, int, int]:
+    match = re.fullmatch(
+        r"(\d+)\.(\d+)\.(\d+)"
+        r"(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
+        r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?",
+        str(value),
+    )
     if not match:
-        return (-1, -1, -1)
-    return tuple(int(part) for part in match.groups())
+        return (-1, -1, -1, -1)
+    major, minor, patch, prerelease = match.groups()
+    return int(major), int(minor), int(patch), 0 if prerelease else 1
 
 
 def version_compatibility(capabilities: dict | None, release: dict) -> str:

@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from PIL import Image
+from PIL.PngImagePlugin import PngInfo
 
 SCRIPT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPT_DIR))
@@ -25,6 +26,7 @@ from goldsrc_toolchain.mdl_v10 import (
     inspect_mdl,
     validate_mdl_contract,
 )
+from goldsrc_toolchain.export_plan import apply_export_plan_data, build_export_plan
 from goldsrc_toolchain.model_contract import ContractError, effective_texture_modes, render_qc, validate_contract
 from goldsrc_toolchain.large_textures import split_smd_document, tile_name, tile_smd_document, write_smd
 from goldsrc_toolchain.paths import ensure_outside_skill_tree, resolve_artifact_root
@@ -42,6 +44,7 @@ from goldsrc_toolchain.transforms import euler_xyz_rotation_error
 from goldsrc_toolchain.visual_evidence import (
     choose_front_axis,
     create_labeled_contact_sheet,
+    decoded_pixel_sha256,
     representative_sample_labels,
     summarize_preview_visibility,
 )
@@ -316,6 +319,41 @@ class ContractTests(unittest.TestCase):
         value.pop("intent")
         normalized = validate_contract(value)
         self.assertEqual(normalized["version"], 1)
+
+    def test_static_material_audit_requires_explicit_prepared_tokens(self) -> None:
+        value = base_contract()
+        value["static_material_audit"] = {
+            "schema_version": 1,
+            "status": "pass",
+            "source_object": "source",
+            "prepared_object": "body_mesh",
+            "source_evaluated": {
+                "vertices": 3,
+                "polygons": 1,
+                "triangles": 1,
+                "materials": [{
+                    "slot": 0, "faces": 1, "triangles": 1,
+                    "material": {"name": "source_mat", "library": None},
+                }],
+            },
+            "prepared": {
+                "vertices": 3,
+                "polygons": 1,
+                "triangles": 1,
+                "materials": [{
+                    "slot": 0, "faces": 1, "triangles": 1,
+                    "token": "base.bmp",
+                }],
+            },
+            "old_to_new": [{"source_slot": 0, "prepared_slot": 0}],
+        }
+        self.assertEqual(
+            validate_contract(value)["static_material_audit"]["status"], "pass",
+        )
+        value["static_material_audit"]["prepared"]["materials"][0]["token"] = None
+        with self.assertRaises(ContractError) as caught:
+            validate_contract(value)
+        self.assertIn("token must be a logical texture token", str(caught.exception))
 
     def test_rejects_unprovable_requirement_phase(self) -> None:
         value = base_contract()
@@ -600,6 +638,10 @@ class AnimationEvidenceTests(unittest.TestCase):
             self.assertGreater(Path(report["path"]).stat().st_size, 0)
             self.assertEqual(json.loads(Path(report["layout_path"]).read_text(encoding="utf-8"))["sha256"], report["sha256"])
             for cell in report["cells"]:
+                self.assertEqual(
+                    cell["source_pixel_sha256"],
+                    decoded_pixel_sha256(cell["source_path"]),
+                )
                 self.assertLessEqual(cell["image_rect"][3], cell["caption_rect"][1])
                 self.assertGreaterEqual(cell["contained_rect"][0], cell["image_rect"][0])
                 self.assertGreaterEqual(cell["contained_rect"][1], cell["image_rect"][1])
@@ -619,6 +661,23 @@ class AnimationEvidenceTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "cannot be negative"):
             representative_sample_labels(-1)
+
+    def test_decoded_pixel_hash_ignores_png_encoding_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            first = root / "first.png"
+            second = root / "second.png"
+            image = Image.new("RGBA", (17, 11), (20, 80, 160, 210))
+            image.save(first, compress_level=0)
+            metadata = PngInfo()
+            metadata.add_text("encoding", "same decoded pixels")
+            image.save(second, compress_level=9, pnginfo=metadata)
+
+            self.assertNotEqual(
+                hashlib.sha256(first.read_bytes()).hexdigest(),
+                hashlib.sha256(second.read_bytes()).hexdigest(),
+            )
+            self.assertEqual(decoded_pixel_sha256(first), decoded_pixel_sha256(second))
 
 
 class SmdTests(unittest.TestCase):
@@ -1005,6 +1064,92 @@ class CompilerIntegrationTests(unittest.TestCase):
                 [(item["name"], item["model_count"]) for item in inspection["bodyparts"]],
                 [("body_part001", 1), ("body_part002", 1)],
             )
+
+    def test_export_plan_omits_only_unused_generated_atlas_tiles(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            contract = base_contract()
+            contract["large_textures"] = [{
+                "name": "atlas.bmp",
+                "image": "atlas.png",
+                "width": 1536,
+                "height": 512,
+            }]
+            skin_tile = tile_name("atlas.bmp", 1, 0)
+            omitted_tile = tile_name("atlas.bmp", 2, 0)
+            contract["skin_families"] = [[skin_tile]]
+            normalized = validate_contract(contract)
+            used_tile = tile_name("atlas.bmp", 0, 0)
+            reference = root / "reference.smd"
+            reference.write_text(REFERENCE_SMD.replace("base.bmp", used_tile), encoding="utf-8")
+            plan = build_export_plan(normalized, [{
+                "contract_source": "reference.smd",
+                "compiled_sources": ["reference.smd"],
+                "materials": [used_tile],
+                "large_texture_tiling": [{"atlas": "atlas.bmp", "tiles": [used_tile]}],
+            }])
+
+            effective = apply_export_plan_data(normalized, plan, root, phase="COMPILE")
+
+            self.assertEqual(plan["version"], 2)
+            self.assertEqual(plan["textures"]["omitted_unused_large_tiles"], [omitted_tile])
+            self.assertEqual(
+                [texture["name"] for texture in effective["textures"]],
+                ["base.bmp", used_tile, skin_tile],
+            )
+            self.assertEqual(effective["large_textures"], [])
+
+    def test_sparse_atlas_export_plan_controls_compiled_texture_table(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            used_tile = tile_name("atlas.bmp", 0, 0)
+            omitted_tile = tile_name("atlas.bmp", 1, 0)
+            (root / "reference.smd").write_text(
+                REFERENCE_SMD.replace("base.bmp", used_tile), encoding="utf-8",
+            )
+            (root / "idle.smd").write_text(IDLE_SMD, encoding="utf-8")
+            source = root / f"{Path(used_tile).stem}.png"
+            Image.new("RGBA", (512, 512), (120, 150, 180, 255)).save(source)
+            convert_to_indexed_bmp(source, root / used_tile, width=512, height=512)
+            contract = base_contract()
+            contract["model_name"] = "sparse_atlas.mdl"
+            contract["textures"] = []
+            contract["large_textures"] = [{
+                "name": "atlas.bmp",
+                "image": "atlas.png",
+                "width": 1024,
+                "height": 512,
+            }]
+            contract["outputs"] = {
+                "sven_mdl": "sparse_atlas.mdl",
+                "qc": "sparse_atlas.qc",
+                "export_plan": "export_plan.json",
+            }
+            (root / "export_plan.json").write_text(json.dumps({
+                "version": 2,
+                "references": [{
+                    "contract_source": "reference.smd",
+                    "compiled_sources": ["reference.smd"],
+                    "materials": [used_tile],
+                }],
+                "textures": {
+                    "declared": [used_tile, omitted_tile],
+                    "referenced": [used_tile],
+                    "compiled": [used_tile],
+                    "omitted_unused_large_tiles": [omitted_tile],
+                },
+            }), encoding="utf-8")
+            contract_path = root / "model_contract.json"
+            contract_path.write_text(json.dumps(contract), encoding="utf-8")
+
+            completed = subprocess.run(
+                [sys.executable, str(SCRIPT_DIR / "compile_model.py"), str(contract_path)],
+                capture_output=True, text=True, errors="replace", timeout=60,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+            inspection = inspect_mdl(root / "sparse_atlas.mdl")
+            self.assertEqual([texture["name"] for texture in inspection["textures"]], [used_tile])
 
     def test_animation_audit_uses_smd_declaration_order_for_nonzero_start_frame(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

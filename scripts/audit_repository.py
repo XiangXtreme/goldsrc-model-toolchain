@@ -145,8 +145,15 @@ def audit(root: Path = REPO_ROOT) -> dict:
         extension_version = None
         errors.append(f"cannot read Extension manifest: {exc}")
     digest, count, byte_count = tree_digest(extension) if extension.is_dir() else ("", 0, 0)
-    if manifest.get("distribution") != "public_github_release":
-        errors.append("manifest distribution must be public_github_release")
+    expected_distribution = (
+        "development_checkout"
+        if isinstance(extension_version, str) and "-" in extension_version
+        else "public_github_release"
+    )
+    if manifest.get("distribution") != expected_distribution:
+        errors.append(
+            f"manifest distribution must be {expected_distribution} for Extension {extension_version}"
+        )
     if bundle.get("root") != EXTENSION_ROOT.as_posix():
         errors.append("manifest bundle path does not match the Extension source")
     if bundle.get("version") != extension_version:
