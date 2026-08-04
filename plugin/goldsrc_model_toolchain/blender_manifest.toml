@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "goldsrc_model_toolchain"
-version = "1.4.2"
+version = "1.4.3"
 name = "GoldSrc Model Toolchain"
 tagline = "GoldSrc MDL v10 authoring and validation"
 maintainer = "XiangXtreme"

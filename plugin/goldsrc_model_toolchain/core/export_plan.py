@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .errors import ToolchainError
+from .large_textures import GOLDSRC_MAX_TEXTURES_PER_MODEL
 
 
 EXPORT_PLAN_VERSION = 2
@@ -73,6 +74,16 @@ def build_export_plan(contract: dict, references: Iterable[dict]) -> dict:
             omitted.append(name)
         else:
             compiled.append(name)
+    if len(compiled) > GOLDSRC_MAX_TEXTURES_PER_MODEL:
+        raise _plan_error(
+            "EXPORT",
+            "compiled texture selection exceeds the complete GoldSrc MDL texture budget",
+            {
+                "compiled": len(compiled),
+                "limit": GOLDSRC_MAX_TEXTURES_PER_MODEL,
+                "textures": compiled,
+            },
+        )
     return {
         "version": EXPORT_PLAN_VERSION,
         "references": reference_items,
@@ -146,6 +157,12 @@ def _apply_texture_selection(contract: dict, texture_plan: dict, phase: str) -> 
         )
     if compiled & omitted or compiled | omitted != declared:
         raise _plan_error(phase, "export plan compiled and omitted textures do not partition declarations")
+    if len(compiled) > GOLDSRC_MAX_TEXTURES_PER_MODEL:
+        raise _plan_error(
+            phase,
+            "export plan exceeds the complete GoldSrc MDL texture budget",
+            {"compiled": len(compiled), "limit": GOLDSRC_MAX_TEXTURES_PER_MODEL},
+        )
 
     invalid_omissions = sorted(
         name for name in omitted

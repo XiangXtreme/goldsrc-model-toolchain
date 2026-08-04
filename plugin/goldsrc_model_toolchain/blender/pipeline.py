@@ -313,11 +313,13 @@ def execute_pipeline(
                 "severity": "error", "code": wrapped.code, "message": wrapped.message,
             })
 
-    contract = load_contract(contract_path, artifact_dir=root, require_files=False)
-    mdl = (root / contract["outputs"]["sven_mdl"]).resolve()
+    contract = None
+    mdl = None
     delivery = None
     if failed_stage is None:
         try:
+            contract = load_contract(contract_path, artifact_dir=root, require_files=False)
+            mdl = (root / contract["outputs"]["sven_mdl"]).resolve()
             delivery = _deliver(mdl, delivery_dir, replace_existing=replace_delivery)
         except ToolchainError as exc:
             failed_stage = "DELIVERY"
@@ -342,8 +344,8 @@ def execute_pipeline(
         "compiled_tiles": export_facts.get("compiled_textures"),
         "omitted_tiles": export_facts.get("omitted_textures"),
         "textures": compile_facts.get("textures"),
-        "mdl_bytes": mdl.stat().st_size if mdl.is_file() else None,
-        "mdl_sha256": _sha256(mdl) if mdl.is_file() else None,
+        "mdl_bytes": mdl.stat().st_size if mdl is not None and mdl.is_file() else None,
+        "mdl_sha256": _sha256(mdl) if mdl is not None and mdl.is_file() else None,
     }
     report = {
         "status": "pass" if failed_stage is None else "fail",
@@ -352,7 +354,7 @@ def execute_pipeline(
         "contract": str(Path(contract_path).expanduser().resolve()),
         "artifacts": str(root),
         "report_directory": str(report_dir),
-        "mdl": str(mdl) if mdl.is_file() else None,
+        "mdl": str(mdl) if mdl is not None and mdl.is_file() else None,
         "warnings": warnings,
         "issues": issues,
         "known_blockers": blockers,

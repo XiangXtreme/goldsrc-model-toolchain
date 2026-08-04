@@ -21,6 +21,33 @@ TEXTURE_FLAGS = {
 }
 KNOWN_TEXTURE_MASK = sum(TEXTURE_FLAGS.values())
 CONTROLLER_TYPES = {"X": 0x0001, "Y": 0x0002, "Z": 0x0004, "XR": 0x0008, "YR": 0x0010, "ZR": 0x0020, "M": 0x0004}
+MOTION_TYPES = {
+    "X": 0x0001, "Y": 0x0002, "Z": 0x0004,
+    "XR": 0x0008, "YR": 0x0010, "ZR": 0x0020,
+    "LX": 0x0040, "LY": 0x0080, "LZ": 0x0100,
+    "AX": 0x0200, "AY": 0x0400, "AZ": 0x0800,
+    "AXR": 0x1000, "AYR": 0x2000, "AZR": 0x4000,
+}
+ACTIVITY_NAMES = (
+    "ACT_RESET", "ACT_IDLE", "ACT_GUARD", "ACT_WALK", "ACT_RUN", "ACT_FLY",
+    "ACT_SWIM", "ACT_HOP", "ACT_LEAP", "ACT_FALL", "ACT_LAND", "ACT_STRAFE_LEFT",
+    "ACT_STRAFE_RIGHT", "ACT_ROLL_LEFT", "ACT_ROLL_RIGHT", "ACT_TURN_LEFT",
+    "ACT_TURN_RIGHT", "ACT_CROUCH", "ACT_CROUCHIDLE", "ACT_STAND", "ACT_USE",
+    "ACT_SIGNAL1", "ACT_SIGNAL2", "ACT_SIGNAL3", "ACT_TWITCH", "ACT_COWER",
+    "ACT_SMALL_FLINCH", "ACT_BIG_FLINCH", "ACT_RANGE_ATTACK1", "ACT_RANGE_ATTACK2",
+    "ACT_MELEE_ATTACK1", "ACT_MELEE_ATTACK2", "ACT_RELOAD", "ACT_ARM", "ACT_DISARM",
+    "ACT_EAT", "ACT_DIESIMPLE", "ACT_DIEBACKWARD", "ACT_DIEFORWARD", "ACT_DIEVIOLENT",
+    "ACT_BARNACLE_HIT", "ACT_BARNACLE_PULL", "ACT_BARNACLE_CHOMP", "ACT_BARNACLE_CHEW",
+    "ACT_SLEEP", "ACT_INSPECT_FLOOR", "ACT_INSPECT_WALL", "ACT_IDLE_ANGRY",
+    "ACT_WALK_HURT", "ACT_RUN_HURT", "ACT_HOVER", "ACT_GLIDE", "ACT_FLY_LEFT",
+    "ACT_FLY_RIGHT", "ACT_DETECT_SCENT", "ACT_SNIFF", "ACT_BITE", "ACT_THREAT_DISPLAY",
+    "ACT_FEAR_DISPLAY", "ACT_EXCITED", "ACT_SPECIAL_ATTACK1", "ACT_SPECIAL_ATTACK2",
+    "ACT_COMBAT_IDLE", "ACT_WALK_SCARED", "ACT_RUN_SCARED", "ACT_VICTORY_DANCE",
+    "ACT_DIE_HEADSHOT", "ACT_DIE_CHESTSHOT", "ACT_DIE_GUTSHOT", "ACT_DIE_BACKSHOT",
+    "ACT_FLINCH_HEAD", "ACT_FLINCH_CHEST", "ACT_FLINCH_STOMACH", "ACT_FLINCH_LEFTARM",
+    "ACT_FLINCH_RIGHTARM", "ACT_FLINCH_LEFTLEG", "ACT_FLINCH_RIGHTLEG",
+)
+ACTIVITY_IDS = {name.casefold(): index for index, name in enumerate(ACTIVITY_NAMES)}
 
 
 class MdlError(ValueError):
@@ -379,6 +406,12 @@ def validate_mdl_contract(inspection: dict, contract: dict, *, tolerance: float 
     def fail(code: str, message: str, **context) -> None:
         issues.append({"severity": "error", "code": code, "message": message, "context": context})
 
+    def vectors_match(left, right) -> bool:
+        return len(left) == len(right) and all(
+            abs(float(first) - float(second)) <= tolerance
+            for first, second in zip(left, right)
+        )
+
     header = inspection["header"]
     expected_bones = [(item["name"], item.get("parent")) for item in contract["bones"]]
     actual_bones = []
@@ -400,6 +433,11 @@ def validate_mdl_contract(inspection: dict, contract: dict, *, tolerance: float 
         fail("mdl.bodyparts", "compiled bodyparts differ from contract", expected=expected_bodyparts, actual=actual_bodyparts)
 
     texture_names = [texture["name"] for texture in inspection["textures"]]
+    if len(texture_names) > 64:
+        fail(
+            "mdl.texture_budget", "compiled MDL exceeds the complete texture-table budget",
+            expected_maximum=64, actual=len(texture_names),
+        )
     actual_families = [[texture_names[index] if 0 <= index < len(texture_names) else f"<invalid:{index}>" for index in row] for row in inspection["skin_families"]]
     expected_families = contract["skin_families"] or ([texture_names] if texture_names else [])
     if [[name.casefold() for name in row] for row in actual_families] != [[name.casefold() for name in row] for row in expected_families]:
@@ -427,19 +465,129 @@ def validate_mdl_contract(inspection: dict, contract: dict, *, tolerance: float 
             fail("mdl.sequence_fps", f"sequence FPS differs: {sequence['name']}", expected=sequence["fps"], actual=actual["fps"])
         if bool(actual["loop"]) != bool(sequence.get("loop")):
             fail("mdl.sequence_loop", f"sequence loop flag differs: {sequence['name']}")
+        frame_range = sequence.get("frame")
+        if frame_range is not None:
+            expected_frames = int(frame_range[1]) - int(frame_range[0]) + 1
+            if actual["frame_count"] != expected_frames:
+                fail(
+                    "mdl.sequence_frames", f"sequence frame count differs: {sequence['name']}",
+                    expected=expected_frames, actual=actual["frame_count"],
+                )
+        activity = sequence.get("activity")
+        if isinstance(activity, dict):
+            expected_activity = ACTIVITY_IDS.get(str(activity.get("name", "")).casefold())
+            expected_weight = int(activity.get("weight", 1))
+            if expected_activity is None:
+                fail(
+                    "mdl.sequence_activity_contract",
+                    f"sequence activity is not a known GoldSrc activity: {sequence['name']}",
+                    activity=activity.get("name"),
+                )
+            elif (actual["activity"], actual["activity_weight"]) != (
+                expected_activity, expected_weight,
+            ):
+                fail(
+                    "mdl.sequence_activity", f"sequence activity differs: {sequence['name']}",
+                    expected={"activity": expected_activity, "weight": expected_weight},
+                    actual={"activity": actual["activity"], "weight": actual["activity_weight"]},
+                )
+        elif (actual["activity"], actual["activity_weight"]) != (0, 0):
+            fail(
+                "mdl.sequence_activity", f"sequence has an undeclared activity: {sequence['name']}",
+                expected={"activity": 0, "weight": 0},
+                actual={"activity": actual["activity"], "weight": actual["activity_weight"]},
+            )
+        expected_motion = sum(MOTION_TYPES[axis] for axis in sequence.get("motion", []))
+        if actual["motion_type"] != expected_motion:
+            fail(
+                "mdl.sequence_motion", f"sequence motion flags differ: {sequence['name']}",
+                expected=expected_motion, actual=actual["motion_type"],
+            )
+        if not expected_motion and not vectors_match(actual["linear_movement"], [0.0, 0.0, 0.0]):
+            fail(
+                "mdl.sequence_linear_movement",
+                f"sequence has undeclared linear movement: {sequence['name']}",
+                expected=[0.0, 0.0, 0.0], actual=actual["linear_movement"],
+            )
         expected_events = [(item["frame"], item["id"], item.get("options", "")) for item in sequence.get("events", [])]
         actual_events = [(item["frame"], item["id"], item.get("options", "")) for item in actual["events"]]
         if actual_events != expected_events:
             fail("mdl.sequence_events", f"sequence events differ: {sequence['name']}", expected=expected_events, actual=actual_events)
 
-    if len(inspection["controllers"]) != len(contract["controllers"]):
-        fail("mdl.controllers", "compiled controller count differs", expected=len(contract["controllers"]), actual=len(inspection["controllers"]))
+    bone_indices = {bone["name"].casefold(): bone["index"] for bone in inspection["bones"]}
+    expected_controllers = [
+        {
+            "bone": bone_indices.get(item["bone"].casefold()),
+            "type": CONTROLLER_TYPES[item["type"]],
+            "start": float(item["start"]),
+            "end": float(item["end"]),
+            "index": int(item["index"]),
+        }
+        for item in sorted(contract["controllers"], key=lambda value: int(value["index"]))
+    ]
+    actual_controllers = sorted(inspection["controllers"], key=lambda value: int(value["index"]))
+    controllers_match = len(actual_controllers) == len(expected_controllers)
+    if controllers_match:
+        for expected, actual in zip(expected_controllers, actual_controllers):
+            controllers_match = (
+                expected["bone"] == actual["bone"]
+                and expected["type"] == actual["type"]
+                and expected["index"] == actual["index"]
+                and abs(expected["start"] - float(actual["start"])) <= tolerance
+                and abs(expected["end"] - float(actual["end"])) <= tolerance
+            )
+            if not controllers_match:
+                break
+    if not controllers_match:
+        fail(
+            "mdl.controllers", "compiled controllers differ from contract",
+            expected=expected_controllers, actual=actual_controllers,
+        )
     # An empty contract list means no hitbox shape was requested. GoldSrc
     # StudioMDL may then generate a compiler-owned subset from skinned bones.
-    if contract["hitboxes"] and len(inspection["hitboxes"]) != len(contract["hitboxes"]):
-        fail("mdl.hitboxes", "compiled hitbox count differs", expected=len(contract["hitboxes"]), actual=len(inspection["hitboxes"]))
-    if len(inspection["attachments"]) != len(contract["attachments"]):
-        fail("mdl.attachments", "compiled attachment count differs", expected=len(contract["attachments"]), actual=len(inspection["attachments"]))
+    if contract["hitboxes"]:
+        expected_hitboxes = [
+            {
+                "bone": bone_indices.get(item["bone"].casefold()),
+                "group": int(item.get("group", 0)),
+                "min": [float(value) for value in item["min"]],
+                "max": [float(value) for value in item["max"]],
+            }
+            for item in contract["hitboxes"]
+        ]
+        actual_hitboxes = inspection["hitboxes"]
+        hitboxes_match = len(actual_hitboxes) == len(expected_hitboxes) and all(
+            expected["bone"] == actual["bone"]
+            and expected["group"] == actual["group"]
+            and vectors_match(expected["min"], actual["min"])
+            and vectors_match(expected["max"], actual["max"])
+            for expected, actual in zip(expected_hitboxes, actual_hitboxes)
+        )
+        if not hitboxes_match:
+            fail(
+                "mdl.hitboxes", "compiled hitboxes differ from contract",
+                expected=expected_hitboxes, actual=actual_hitboxes,
+            )
+    expected_attachments = [
+        {
+            "index": int(item["index"]),
+            "bone": bone_indices.get(item["bone"].casefold()),
+            "origin": [float(value) for value in item["origin"]],
+        }
+        for item in sorted(contract["attachments"], key=lambda value: int(value["index"]))
+    ]
+    actual_attachments = sorted(inspection["attachments"], key=lambda value: int(value["index"]))
+    attachments_match = len(actual_attachments) == len(expected_attachments) and all(
+        expected["index"] == actual["index"]
+        and expected["bone"] == actual["bone"]
+        and vectors_match(expected["origin"], actual["origin"])
+        for expected, actual in zip(expected_attachments, actual_attachments)
+    )
+    if not attachments_match:
+        fail(
+            "mdl.attachments", "compiled attachments differ from contract",
+            expected=expected_attachments, actual=actual_attachments,
+        )
 
     for kind, header_min, header_max in (("bbox", "min", "max"), ("cbox", "bbmin", "bbmax")):
         expected = [*contract["bounds"][kind]["min"], *contract["bounds"][kind]["max"]]

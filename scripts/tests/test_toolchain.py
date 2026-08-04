@@ -29,7 +29,7 @@ from goldsrc_toolchain.mdl_v10 import (
 from goldsrc_toolchain.export_plan import apply_export_plan_data, build_export_plan
 from goldsrc_toolchain.model_contract import ContractError, effective_texture_modes, render_qc, validate_contract
 from goldsrc_toolchain.large_textures import split_smd_document, tile_name, tile_smd_document, write_smd
-from goldsrc_toolchain.paths import ensure_outside_skill_tree, resolve_artifact_root
+from goldsrc_toolchain.paths import ensure_outside_skill_tree, resolve_artifact_root, resolve_contained_path
 from goldsrc_toolchain.stages import _requirements
 from goldsrc_toolchain.smd import (
     SmdError,
@@ -102,6 +102,18 @@ def base_contract() -> dict:
 
 
 class ArtifactIsolationTests(unittest.TestCase):
+    def test_contained_paths_reject_absolute_and_parent_escapes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            self.assertEqual(
+                resolve_contained_path(root, "roundtrip/action_000.png"),
+                root / "roundtrip" / "action_000.png",
+            )
+            with self.assertRaisesRegex(ValueError, "must stay inside"):
+                resolve_contained_path(root, "../../../outside.png")
+            with self.assertRaisesRegex(ValueError, "must stay inside"):
+                resolve_contained_path(root, root.parent / "outside.png")
+
     def test_rejects_artifacts_and_writes_inside_skill_tree(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -295,6 +307,23 @@ class ContractTests(unittest.TestCase):
         ]
         qc = render_qc(value)
         self.assertLess(qc.index('$texrendermode "glow.bmp" additive'), qc.index('$texrendermode "mask.bmp" masked'))
+
+    def test_rejects_qc_directive_injection_in_names_paths_and_event_options(self) -> None:
+        injected = 'safe"\n$scale 999\n".bmp'
+        self.assert_contract_error(
+            lambda contract: contract["textures"][0].update(name=injected, source=injected),
+            "must not contain quotes or control characters",
+        )
+        self.assert_contract_error(
+            lambda contract: contract["sequences"][0].update(name='idle"\n$scale 999'),
+            "must not contain quotes or control characters",
+        )
+        self.assert_contract_error(
+            lambda contract: contract["sequences"][0].update(
+                events=[{"frame": 0, "id": 1, "options": 'x"\n$scale 999'}],
+            ),
+            "must not contain quotes or control characters",
+        )
 
     def test_compatibility_requires_safe_relative_baseline(self) -> None:
         self.assert_contract_error(
@@ -563,6 +592,66 @@ class LargeTextureTests(unittest.TestCase):
         }]
         normalized = validate_contract(contract)
         self.assertEqual(len(normalized["textures"]), 2)
+
+    def test_large_texture_namespace_collision_is_a_hard_failure(self) -> None:
+        contract = base_contract()
+        contract["textures"] = [{
+            "name": "atlas_00_00.bmp", "source": "other.bmp",
+            "width": 64, "height": 64, "modes": [],
+        }]
+        contract["large_textures"] = [{
+            "name": "atlas.bmp", "image": "atlas.png", "width": 1024, "height": 512,
+        }]
+        with self.assertRaisesRegex(ContractError, "conflicts with declared texture"):
+            validate_contract(contract)
+
+        contract = base_contract()
+        contract["textures"] = [{
+            "name": "atlas.bmp", "source": "atlas.bmp",
+            "width": 512, "height": 512, "modes": [],
+        }]
+        contract["large_textures"] = [{
+            "name": "atlas.bmp", "image": "atlas.png", "width": 1024, "height": 1024,
+        }]
+        with self.assertRaisesRegex(
+            ContractError, "logical large-texture names must not collide",
+        ):
+            validate_contract(contract)
+
+    def test_one_kilopixel_atlas_stays_within_the_complete_texture_budget(self) -> None:
+        contract = base_contract()
+        contract["textures"] = []
+        contract["large_textures"] = [{
+            "name": "atlas.bmp", "image": "atlas.png", "width": 1024, "height": 1024,
+        }]
+        normalized = validate_contract(contract)
+        self.assertEqual(
+            [item["name"] for item in normalized["textures"]],
+            [
+                "atlas_00_00.bmp", "atlas_01_00.bmp",
+                "atlas_00_01.bmp", "atlas_01_01.bmp",
+            ],
+        )
+
+    def test_complete_mdl_texture_budget_spans_all_atlases(self) -> None:
+        contract = base_contract()
+        contract["textures"] = []
+        contract["large_textures"] = [
+            {"name": "first.bmp", "image": "first.png", "width": 4096, "height": 4096},
+            {"name": "second.bmp", "image": "second.png", "width": 4096, "height": 4096},
+        ]
+        with self.assertRaisesRegex(ContractError, "texture budget exceeded across the complete MDL"):
+            validate_contract(contract)
+
+        raw = {
+            "textures": [
+                {"name": f"texture_{index:02d}.bmp"}
+                for index in range(65)
+            ],
+            "skin_families": [],
+        }
+        with self.assertRaisesRegex(RuntimeError, "complete GoldSrc MDL texture budget"):
+            build_export_plan(raw, [])
 
 
 class AnimationEvidenceTests(unittest.TestCase):
@@ -1012,6 +1101,45 @@ class CompilerIntegrationTests(unittest.TestCase):
             changed = copy.deepcopy(normalized)
             changed["bounds"]["bbox"]["max"][0] = 2
             self.assertTrue(any(item["code"] == "mdl.bbox" for item in validate_mdl_contract(inspection, changed)))
+
+            semantic_contract = copy.deepcopy(normalized)
+            semantic_contract["controllers"] = [{
+                "index": 0, "bone": "root", "type": "X", "start": -2.0, "end": 3.0,
+            }]
+            semantic_contract["attachments"] = [{
+                "index": 0, "bone": "root", "origin": [0.0, 1.0, 2.0],
+            }]
+            semantic_contract["sequences"][0]["activity"] = {"name": "ACT_IDLE", "weight": 3}
+            semantic_contract["sequences"][0]["motion"] = ["X"]
+            semantic_inspection = copy.deepcopy(inspection)
+            semantic_inspection["controllers"] = [{
+                "bone": 0, "type": 1, "start": -2.0, "end": 3.0,
+                "rest": 0, "index": 0,
+            }]
+            semantic_inspection["attachments"] = [{
+                "index": 0, "name": "", "type": 0, "bone": 0,
+                "origin": [0.0, 1.0, 2.0], "vectors": [[0.0] * 3] * 3,
+            }]
+            semantic_inspection["sequences"][0].update(
+                activity=1, activity_weight=3, motion_type=1,
+            )
+            self.assertEqual(
+                validate_mdl_contract(semantic_inspection, semantic_contract), [],
+            )
+
+            corrupted = copy.deepcopy(semantic_inspection)
+            corrupted["controllers"][0]["bone"] = 7
+            corrupted["hitboxes"][0]["min"][0] -= 4.0
+            corrupted["attachments"][0]["origin"][2] += 4.0
+            corrupted["sequences"][0]["activity"] = 9
+            corrupted["sequences"][0]["motion_type"] = 2
+            codes = {
+                item["code"] for item in validate_mdl_contract(corrupted, semantic_contract)
+            }
+            self.assertTrue({
+                "mdl.controllers", "mdl.hitboxes", "mdl.attachments",
+                "mdl.sequence_activity", "mdl.sequence_motion",
+            } <= codes)
 
     def test_export_plan_compiles_split_reference_as_bodyparts(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

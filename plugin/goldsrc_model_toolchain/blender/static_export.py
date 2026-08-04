@@ -6,7 +6,8 @@ import hashlib
 import json
 import math
 import re
-import struct
+import sys
+from array import array
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -21,6 +22,8 @@ from ..core.material_mapping import (
     aggregate_token_triangles,
     inspect_mesh_material_usage,
     material_key,
+    mesh_geometry_signature,
+    mesh_material_assignment_signature,
     original_material,
 )
 from ..core.model_contract import TEXTURE_MODES, validate_contract
@@ -84,29 +87,48 @@ def _rounded(values) -> list[float]:
     return [round(float(value), 9) for value in values]
 
 
-def _image_fingerprint(image) -> dict[str, Any]:
+def _image_fingerprint(image, cache: dict[int, dict[str, Any]] | None = None) -> dict[str, Any]:
+    pointer = int(image.as_pointer())
+    if cache is not None and pointer in cache:
+        return cache[pointer]
     path = Path(bpy.path.abspath(image.filepath)).expanduser() if image.filepath else None
     stat = None
     if path and path.is_file():
         info = path.stat()
         stat = [info.st_size, info.st_mtime_ns]
-    pixels = []
-    try:
+    dirty = bool(image.is_dirty)
+    content_source = "pixels"
+    digest = hashlib.sha256()
+    packed = getattr(image, "packed_file", None)
+    if path and path.is_file() and not dirty and image.source != "GENERATED" and packed is None:
+        content_source = "file"
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    elif packed is not None and not dirty and image.source != "GENERATED":
+        content_source = "packed"
+        digest.update(bytes(packed.data))
+    else:
         count = len(image.pixels)
-        if count:
-            for index in sorted({0, count // 7, count // 3, count // 2, count - 1}):
-                pixels.append(round(float(image.pixels[index]), 7))
-    except (RuntimeError, ValueError):
-        pixels = []
-    return {
+        digest.update(int(count).to_bytes(8, "little", signed=False))
+        for start in range(0, count, 262144):
+            values = array("f", image.pixels[start:min(count, start + 262144)])
+            if sys.byteorder != "little":
+                values.byteswap()
+            digest.update(values.tobytes())
+    result = {
         "name": image.name,
         "source": image.source,
         "size": [int(value) for value in image.size],
         "filepath": str(path) if path else None,
         "file_stat": stat,
-        "dirty": bool(image.is_dirty),
-        "samples": pixels,
+        "dirty": dirty,
+        "content_source": content_source,
+        "content_sha256": digest.hexdigest(),
     }
+    if cache is not None:
+        cache[pointer] = result
+    return result
 
 
 def _socket_default(socket):
@@ -121,7 +143,10 @@ def _socket_default(socket):
         return str(value)
 
 
-def _material_fingerprint(material) -> dict[str, Any] | None:
+def _material_fingerprint(
+    material,
+    image_cache: dict[int, dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
     if material is None:
         return None
     result: dict[str, Any] = {
@@ -145,7 +170,7 @@ def _material_fingerprint(material) -> dict[str, Any] | None:
         })
         image = getattr(node, "image", None)
         if image is not None:
-            images.append(_image_fingerprint(image))
+            images.append(_image_fingerprint(image, image_cache))
     result["nodes"] = sorted(nodes, key=lambda item: (item["type"], item["name"]))
     result["links"] = sorted(
         (
@@ -215,7 +240,8 @@ def _material_transparency(material) -> bool:
         return True
     if not material.use_nodes or material.node_tree is None:
         return False
-    for node in material.node_tree.nodes:
+    surface_nodes, _unsupported = _surface_nodes(material)
+    for node in surface_nodes:
         if node.type == "BSDF_TRANSPARENT":
             return True
         if node.type == "BSDF_PRINCIPLED":
@@ -228,15 +254,11 @@ def _material_transparency(material) -> bool:
 def _surface_nodes(material) -> tuple[list[Any], list[str]]:
     if material is None or not material.use_nodes or material.node_tree is None:
         return [], ["material_without_nodes"]
-    node_groups = [
-        node.bl_idname for node in material.node_tree.nodes
-        if node.type == "GROUP"
-    ]
     outputs = [node for node in material.node_tree.nodes if node.type == "OUTPUT_MATERIAL" and node.is_active_output]
     if not outputs:
-        return [], sorted(set(["missing_active_material_output", *node_groups]))
+        return [], ["missing_active_material_output"]
     pending = []
-    unsupported = list(node_groups)
+    unsupported = []
     visited = set()
     for output in outputs:
         surface = output.inputs.get("Surface")
@@ -257,6 +279,9 @@ def _surface_nodes(material) -> tuple[list[Any], list[str]]:
         if pointer in visited:
             continue
         visited.add(pointer)
+        if node.type == "GROUP":
+            unsupported.append(node.bl_idname)
+            continue
         if node.type not in allowed:
             unsupported.append(node.bl_idname)
             continue
@@ -272,10 +297,7 @@ def _alpha_bake_unsupported(material) -> list[str]:
         return []
     if not material.use_nodes or material.node_tree is None:
         return []
-    unsupported = [
-        node.bl_idname for node in material.node_tree.nodes
-        if node.type == "GROUP"
-    ]
+    unsupported = []
     outputs = [
         node for node in material.node_tree.nodes
         if node.type == "OUTPUT_MATERIAL" and node.is_active_output
@@ -301,6 +323,9 @@ def _alpha_bake_unsupported(material) -> list[str]:
         if pointer in visited:
             continue
         visited.add(pointer)
+        if node.type == "GROUP":
+            unsupported.append(node.bl_idname)
+            continue
         if node.type not in allowed:
             unsupported.append(node.bl_idname)
             continue
@@ -314,12 +339,15 @@ def _alpha_bake_unsupported(material) -> list[str]:
     return sorted(set(unsupported))
 
 
-def _material_facts(material) -> dict[str, Any]:
+def _material_facts(
+    material,
+    image_cache: dict[int, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     surface_nodes, unsupported = _surface_nodes(material)
     images = []
     if material and material.use_nodes and material.node_tree:
         images = [
-            _image_fingerprint(node.image)
+            _image_fingerprint(node.image, image_cache)
             for node in material.node_tree.nodes
             if node.type == "TEX_IMAGE" and node.image is not None
         ]
@@ -332,23 +360,6 @@ def _material_facts(material) -> dict[str, Any]:
         "unsupported_alpha_bake": _alpha_bake_unsupported(material),
         "images": images,
     }
-
-
-def _mesh_geometry_signature(mesh) -> str:
-    """Hash ordered geometry so a second dependency-graph evaluation cannot be remapped blindly."""
-
-    digest = hashlib.sha256()
-    digest.update(struct.pack(
-        "<QQQ", len(mesh.vertices), len(mesh.loops), len(mesh.polygons),
-    ))
-    for vertex in mesh.vertices:
-        digest.update(struct.pack("<3d", *(float(value) for value in vertex.co)))
-    for polygon in mesh.polygons:
-        vertices = tuple(int(value) for value in polygon.vertices)
-        digest.update(struct.pack("<Q", len(vertices)))
-        if vertices:
-            digest.update(struct.pack(f"<{len(vertices)}Q", *vertices))
-    return digest.hexdigest()
 
 
 def _ensure_material_slots(mesh, obj) -> None:
@@ -406,9 +417,10 @@ def _analyze_object(obj) -> tuple[dict[str, Any], str]:
             for modifier in obj.modifiers
             if modifier.type == "ARMATURE" and modifier.object is not None
         } | ({obj.parent.name} if obj.parent and obj.parent.type == "ARMATURE" else set()))
+        image_cache: dict[int, dict[str, Any]] = {}
         material_facts = [
             {
-                **_material_facts(material),
+                **_material_facts(material, image_cache),
                 "slot": distribution["slot"],
                 "faces": distribution["faces"],
                 "triangles": distribution["triangles"],
@@ -452,7 +464,9 @@ def _analyze_object(obj) -> tuple[dict[str, Any], str]:
                 layer.name: [_rounded(item.uv) for item in layer.data]
                 for layer in mesh.uv_layers
             },
-            "materials": [_material_fingerprint(material) for material in materials],
+            "materials": [
+                _material_fingerprint(material, image_cache) for material in materials
+            ],
         }
         fingerprint = hashlib.sha256(
             json.dumps(fingerprint_payload, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
@@ -708,7 +722,13 @@ def _capture_evaluated_surface(source) -> dict[str, Any]:
                 {"object": source.name, "slots": missing},
             )
         return {
-            "geometry_sha256": _mesh_geometry_signature(evaluated_mesh),
+            "local_geometry_sha256": mesh_geometry_signature(evaluated_mesh),
+            "geometry_sha256": mesh_geometry_signature(
+                evaluated_mesh, transform=evaluated.matrix_world,
+            ),
+            "material_assignment_sha256": mesh_material_assignment_signature(
+                evaluated_mesh, usage=usage,
+            ),
             "vertices": len(evaluated_mesh.vertices),
             "polygons": len(evaluated_mesh.polygons),
             "triangles": usage.triangles,
@@ -735,14 +755,14 @@ def _freeze_mesh(source, collection, origin_strategy: str, created: _CreatedData
         )
     created.meshes.append(mesh)
     mesh.name = _unique_id_name(bpy.data.meshes, f"{stem}_GoldSrc_MESH")
-    frozen_signature = _mesh_geometry_signature(mesh)
-    if frozen_signature != snapshot["geometry_sha256"]:
+    frozen_signature = mesh_geometry_signature(mesh)
+    if frozen_signature != snapshot["local_geometry_sha256"]:
         raise ToolchainError(
             "PREPARE", "static.evaluated_topology_changed",
             "The evaluated mesh changed while Blender was freezing it",
             {
                 "object": source.name,
-                "captured_geometry_sha256": snapshot["geometry_sha256"],
+                "captured_geometry_sha256": snapshot["local_geometry_sha256"],
                 "frozen_geometry_sha256": frozen_signature,
                 "captured": {
                     "vertices": snapshot["vertices"],
@@ -818,17 +838,37 @@ def _freeze_mesh(source, collection, origin_strategy: str, created: _CreatedData
         else:
             offset = Vector(((minimum.x + maximum.x) * 0.5, (minimum.y + maximum.y) * 0.5, minimum.z))
         transform = Matrix.Translation(-offset) @ transform
-    mesh.transform(transform)
+    obj.matrix_world = transform
+    with bpy.context.temp_override(
+        object=obj,
+        active_object=obj,
+        selected_objects=[obj],
+        selected_editable_objects=[obj],
+    ):
+        result = bpy.ops.object.transform_apply(
+            location=True,
+            rotation=True,
+            scale=True,
+            properties=True,
+            corrective_flip_normals=True,
+            isolate_users=False,
+        )
+    if result != {"FINISHED"}:
+        raise ToolchainError(
+            "PREPARE", "static.freeze_transform",
+            "Blender did not apply the frozen transform with corrected face winding",
+            {"object": source.name, "result": sorted(result)},
+        )
     mesh.update()
-    obj.matrix_world = Matrix.Identity(4)
     obj[PREPARED_MARKER] = True
     material_audit = {
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "pending",
         "source_object": source.name,
         "prepared_object": obj.name,
         "source_evaluated": {
             "geometry_sha256": snapshot["geometry_sha256"],
+            "material_assignment_sha256": snapshot["material_assignment_sha256"],
             "vertices": snapshot["vertices"],
             "polygons": snapshot["polygons"],
             "triangles": snapshot["triangles"],
@@ -909,6 +949,10 @@ def _finalize_material_audit(obj, audit: dict[str, Any]) -> dict[str, Any]:
     audit = dict(audit)
     audit["status"] = "pass"
     audit["prepared"] = {
+        "geometry_sha256": mesh_geometry_signature(obj.data),
+        "material_assignment_sha256": mesh_material_assignment_signature(
+            obj.data, usage=usage, use_tokens=True,
+        ),
         "vertices": len(obj.data.vertices),
         "polygons": len(obj.data.polygons),
         "triangles": usage.triangles,

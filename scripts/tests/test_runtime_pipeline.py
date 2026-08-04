@@ -120,6 +120,24 @@ class RuntimePipelineTests(unittest.TestCase):
             self.assertEqual(persisted["error"]["code"], "fixture.export")
             self.assertEqual(persisted["large_diagnostic"], list(range(100)))
 
+    def test_invalid_contract_returns_compact_failure_and_writes_pipeline_report(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "invalid.json"
+            path.write_text(json.dumps({"version": 2}), encoding="utf-8")
+
+            result = pipeline.execute_pipeline(
+                path, root, assurance="standard", visual_compare=False,
+                preserve_author_session=False, package_name="fixture",
+            )
+
+            self.assertEqual(result["status"], "fail")
+            self.assertEqual(result["failed_stage"], "PREFLIGHT")
+            self.assertEqual(result["error"]["code"], "contract.invalid")
+            persisted = json.loads((root / "reports" / "pipeline.json").read_text(encoding="utf-8"))
+            self.assertEqual(persisted["failed_stage"], "PREFLIGHT")
+            self.assertIsNone(persisted["mdl"])
+
     def test_strict_pipeline_repeats_only_isolated_roundtrip(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

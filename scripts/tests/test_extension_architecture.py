@@ -137,6 +137,9 @@ class ExtensionArchitectureTests(unittest.TestCase):
             'GeometryNodeSetMaterial', 'AutoTerrain_base',
             'static_material_audit',
             'GOLDSRC_STATIC_EXPECT_AUDIT_FAILURE',
+            'GOLDSRC_STATIC_EXPECT_SOURCE_AUDIT_FAILURE',
+            'FingerprintGenerated', 'Unused Transparent', 'Unused Node Group',
+            '_assert_prepared_winding',
         ):
             self.assertIn(token, source)
 

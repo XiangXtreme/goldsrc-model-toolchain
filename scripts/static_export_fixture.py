@@ -83,10 +83,19 @@ def _source_scene():
     material.node_tree.links.new(first.outputs["BSDF"], mix.inputs[1])
     material.node_tree.links.new(second.outputs["BSDF"], mix.inputs[2])
     material.node_tree.links.new(mix.outputs["Shader"], output.inputs["Surface"])
+    nodes.new("ShaderNodeBsdfTransparent").name = "Unused Transparent"
+    nodes.new("ShaderNodeGroup").name = "Unused Node Group"
+    fingerprint_image = bpy.data.images.new("FingerprintGenerated", 16, 16, alpha=True)
+    fingerprint_image.pixels.foreach_set([0.125, 0.25, 0.5, 1.0] * (16 * 16))
+    fingerprint_image.update()
+    fingerprint_node = nodes.new("ShaderNodeTexImage")
+    fingerprint_node.name = "Fingerprint Image"
+    fingerprint_node.image = fingerprint_image
     mesh.materials.append(raw_material)
     obj = bpy.data.objects.new("BranchedCaveMesh", mesh)
     bpy.context.scene.collection.objects.link(obj)
     obj.location = (7.0, -4.0, 2.5)
+    obj.scale.x = -1.0
 
     geometry = bpy.data.node_groups.new("CaveEvaluatedGeometry", "GeometryNodeTree")
     geometry.interface.new_socket(name="Geometry", in_out="INPUT", socket_type="NodeSocketGeometry")
@@ -158,6 +167,23 @@ def _assert_prepared_material_mapping(prepared_object, audit) -> None:
         raise RuntimeError(f"prepared logical token audit mismatch: {prepared_materials}")
 
 
+def _assert_prepared_winding(source, prepared_object) -> None:
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    evaluated = source.evaluated_get(depsgraph)
+    mesh = evaluated.to_mesh(preserve_all_data_layers=True, depsgraph=depsgraph)
+    try:
+        normal_matrix = evaluated.matrix_world.to_3x3().inverted_safe().transposed()
+        expected = [(normal_matrix @ polygon.normal).normalized() for polygon in mesh.polygons]
+    finally:
+        evaluated.to_mesh_clear()
+    actual = [polygon.normal.normalized() for polygon in prepared_object.data.polygons]
+    if len(expected) != len(actual) or any(left.dot(right) < 0.99999 for left, right in zip(expected, actual)):
+        raise RuntimeError(
+            "negative-determinant freeze changed face orientation: "
+            f"dots={[left.dot(right) for left, right in zip(expected, actual)]}"
+        )
+
+
 def _session_state() -> dict:
     scene = bpy.context.scene
     view_layer = bpy.context.view_layer
@@ -210,6 +236,11 @@ def main() -> dict:
         "actions": len(bpy.data.actions),
     }
     analysis = api.analyze_selected_static()
+    if analysis["summary"]["transparent_materials"]:
+        raise RuntimeError(
+            "unconnected Transparent or Node Group nodes changed active Surface semantics: "
+            f"{analysis['summary']['transparent_materials']}"
+        )
     undecided = api.export_selected_static(
         artifacts_dir=str(artifacts),
         model_name="branched_cave_2k.mdl",
@@ -248,6 +279,32 @@ def main() -> dict:
         raise RuntimeError("stale static analysis was accepted after the source changed")
     source.location.x -= 1.0
     bpy.context.view_layer.update()
+    fingerprint_image = bpy.data.images["FingerprintGenerated"]
+    pixel_index = 137
+    original_pixel = float(fingerprint_image.pixels[pixel_index])
+    fingerprint_image.pixels[pixel_index] = 0.875 if original_pixel < 0.5 else 0.125
+    fingerprint_image.update()
+    try:
+        api.prepare_static_export(
+            analysis["analysis_id"],
+            artifacts_dir=str(artifacts),
+            model_name="branched_cave_2k.mdl",
+            request="Export the selected object as an MDL with a 2K texture and no baked lighting.",
+            texture_size=texture_size,
+            uv_strategy="smart_project",
+            origin_strategy="source_origin",
+            bake_mode="unlit_color",
+            goldsrc_modes=goldsrc_modes,
+        )
+    except Exception as exc:
+        if getattr(exc, "code", None) != "static.analysis_stale":
+            raise
+    else:
+        raise RuntimeError("generated-image pixel mutation did not invalidate static analysis")
+    finally:
+        fingerprint_image.pixels[pixel_index] = original_pixel
+        fingerprint_image.update()
+    analysis = api.analyze_selected_static()
     if os.environ.get("GOLDSRC_STATIC_EXPECT_AUDIT_FAILURE") == "1":
         prepared = api.prepare_static_export(
             analysis["analysis_id"],
@@ -292,6 +349,49 @@ def main() -> dict:
         )
         print("GOLDSRC_STATIC_FIXTURE", json.dumps(summary, sort_keys=True))
         return summary
+    if os.environ.get("GOLDSRC_STATIC_EXPECT_SOURCE_AUDIT_FAILURE") == "1":
+        prepared = api.prepare_static_export(
+            analysis["analysis_id"],
+            artifacts_dir=str(artifacts),
+            model_name="branched_cave_2k.mdl",
+            request="Export the selected object as an MDL with a 2K texture and no baked lighting.",
+            texture_size=texture_size,
+            uv_strategy="smart_project",
+            origin_strategy="source_origin",
+            bake_mode="unlit_color",
+            goldsrc_modes=goldsrc_modes,
+        )
+        original_coordinate = source.data.vertices[0].co.copy()
+        source.data.vertices[0].co.z += 0.25
+        source.data.update()
+        bpy.context.view_layer.update()
+        try:
+            failed = api.execute_pipeline(
+                prepared["contract_path"], prepared["artifacts_dir"],
+                assurance="standard", preserve_author_session=True,
+                visual_compare=False,
+            )
+            preflight = json.loads(
+                (artifacts / "reports" / "preflight.json").read_text(encoding="utf-8")
+            )
+        finally:
+            source.data.vertices[0].co = original_coordinate
+            source.data.update()
+            bpy.context.view_layer.update()
+        failures = preflight.get("facts", {}).get("static_material_audit", {}).get("failures", [])
+        if failed.get("status") != "fail" or failed.get("failed_stage") != "PREFLIGHT":
+            raise RuntimeError(f"source geometry mutation was accepted: {failed}")
+        if not any(item.get("reason") == "geometry_signature_changed" for item in failures):
+            raise RuntimeError(f"source geometry mutation failed for the wrong reason: {preflight}")
+        summary = {
+            "status": "pass", "expected_source_failure": True,
+            "failed_stage": failed["failed_stage"], "failures": failures,
+        }
+        (artifacts / "static_fixture_summary.json").write_text(
+            json.dumps(summary, indent=2, ensure_ascii=False) + "\n", encoding="utf-8",
+        )
+        print("GOLDSRC_STATIC_FIXTURE", json.dumps(summary, sort_keys=True))
+        return summary
     if os.environ.get("GOLDSRC_STATIC_PREPARE_ONLY") == "1":
         prepared = api.prepare_static_export(
             analysis["analysis_id"],
@@ -318,6 +418,7 @@ def main() -> dict:
         _assert_prepared_material_mapping(
             prepared_object, prepared["prepared"]["material_audit"],
         )
+        _assert_prepared_winding(source, prepared_object)
         summary = {
             "status": "pass",
             "analysis": analysis,
@@ -385,6 +486,7 @@ def main() -> dict:
     _assert_prepared_material_mapping(
         prepared_object, contract["static_material_audit"],
     )
+    _assert_prepared_winding(source, prepared_object)
     preflight = json.loads((artifacts / "reports" / "preflight.json").read_text(encoding="utf-8"))
     export = json.loads((artifacts / "reports" / "export.json").read_text(encoding="utf-8"))
     if preflight["facts"]["static_material_audit"]["status"] != "pass":

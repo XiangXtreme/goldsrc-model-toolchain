@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,6 +14,7 @@ from mathutils import Vector
 from ..core.action_curves import representative_frame_samples
 from ..core.errors import ToolchainError
 from ..core.model_contract import load_contract
+from ..core.paths import resolve_contained_path
 from ..core.reporting import requirement_report_reference
 from ..core.visual_evidence import (
     choose_front_axis,
@@ -24,6 +26,25 @@ from ..core.visual_evidence import (
 from .action_import import local_pose_globals
 from .mdl_import import import_mdl
 from .visual_compare import render_canonical_objects
+
+
+_SAFE_EVIDENCE_COMPONENT = re.compile(r"[^A-Za-z0-9_.-]+")
+
+
+def _evidence_path(root: Path, filename: str) -> Path:
+    try:
+        return resolve_contained_path(root, filename)
+    except ValueError as exc:
+        raise ToolchainError(
+            "ROUNDTRIP", "roundtrip.evidence_file_escape",
+            "Round-trip evidence file must stay inside the evidence directory",
+            {"evidence_dir": str(root), "filename": filename},
+        ) from exc
+
+
+def _action_evidence_stem(action_name: str, action_index: int) -> str:
+    safe = _SAFE_EVIDENCE_COMPONENT.sub("_", str(action_name)).strip("._-") or "action"
+    return f"action_{action_index:03d}_{safe[:48]}"
 
 
 def _bounds(objects):
@@ -351,8 +372,9 @@ def run_roundtrip(
     bounds = _configure_render(imported["objects"])
     previews = []
     contact_sheets = []
-    for action in imported["actions"]:
+    for action_index, action in enumerate(imported["actions"]):
         _bind_action(imported["armature"], action)
+        evidence_stem = _action_evidence_stem(action.name, action_index)
         samples = representative_frame_samples(action.frame_range, maximum=5)
         if len(samples) < min(5, max(1, round(action.frame_range[1] - action.frame_range[0] + 1))):
             raise ToolchainError("ROUNDTRIP", "roundtrip.samples", "Action did not produce bounded representative samples", {"action": action.name, "samples": samples})
@@ -361,7 +383,10 @@ def run_roundtrip(
         sample_labels = representative_sample_labels(len(samples))
         for sample_index, frame in enumerate(samples):
             bpy.context.scene.frame_set(int(round(frame)))
-            path = evidence_root / f"roundtrip_{action.name}_{int(round(frame)):04d}.png"
+            path = _evidence_path(
+                evidence_root,
+                f"roundtrip_{evidence_stem}_{sample_index:02d}_{int(round(frame)):04d}.png",
+            )
             facts = _render(path)
             facts.update({
                 "action": action.name,
@@ -376,7 +401,9 @@ def run_roundtrip(
                 "ROUNDTRIP", "roundtrip.static_previews", "Animated Action produced identical five-point previews",
                 {"action": action.name, "samples": samples},
             )
-        sheet_path = evidence_root / f"roundtrip_{action.name}_contact_sheet.png"
+        sheet_path = _evidence_path(
+            evidence_root, f"roundtrip_{evidence_stem}_contact_sheet.png",
+        )
         sheet = create_labeled_contact_sheet(
             [
                 {

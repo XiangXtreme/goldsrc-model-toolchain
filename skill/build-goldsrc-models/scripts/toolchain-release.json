@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
   "repository": "https://github.com/XiangXtreme/goldsrc-model-toolchain",
-  "version": "1.4.2",
-  "sha256": "7a31f2c730af0b03f42f507910d857de434429062d91dcc1e56991e27b2a8e67",
+  "version": "1.4.3",
+  "sha256": "160f8aa6b182a1a62ef64a74289e314caa563d531179f84d9817e55ac10d5f7c",
   "extension_id": "goldsrc_model_toolchain",
   "api_version": 1,
   "blender": "5.2.x",

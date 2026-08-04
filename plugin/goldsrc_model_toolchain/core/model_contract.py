@@ -9,7 +9,12 @@ import re
 from pathlib import Path, PureWindowsPath
 from typing import Any, Iterable
 
-from .large_textures import LargeTextureError, tile_name, validate_large_texture_spec
+from .large_textures import (
+    GOLDSRC_MAX_TEXTURES_PER_MODEL,
+    LargeTextureError,
+    tile_name,
+    validate_large_texture_spec,
+)
 from .material_mapping import STATIC_MATERIAL_AUDIT_FIELD
 from .smd import SmdError, geometry_budget, read_smd, validate_smd
 from .textures import TextureError, validate_indexed_bmp
@@ -30,16 +35,28 @@ REQUIREMENT_EVIDENCE_PHASES = set(DEFAULT_PHASES) - {"environment"}
 _NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 
+def _qc_text(value: Any, label: str, errors: list[str], *, allow_empty: bool = False) -> str | None:
+    """Validate text that will be emitted inside a quoted QC token."""
+
+    if not isinstance(value, str) or (not allow_empty and not value.strip()):
+        errors.append(f"{label} must be a non-empty string")
+        return None
+    if '"' in value or any(ord(character) < 32 or ord(character) == 127 for character in value):
+        errors.append(f"{label} must not contain quotes or control characters")
+    return value
+
+
 def _expand_large_textures(contract: dict[str, Any]) -> None:
     """Materialize 512px tile records while retaining the logical atlas declaration."""
 
     atlases = contract.get("large_textures", [])
     textures = list(contract.get("textures", []))
     names = {
-        item.get("name", "").casefold()
+        item.get("name", "").casefold(): item
         for item in textures
         if isinstance(item, dict) and isinstance(item.get("name"), str)
     }
+    collisions = []
     if not isinstance(atlases, list):
         return
     for atlas in atlases:
@@ -57,7 +74,21 @@ def _expand_large_textures(contract: dict[str, Any]) -> None:
         for tile_y in range(height // tile_size):
             for tile_x in range(width // tile_size):
                 tile = tile_name(name, tile_x, tile_y)
+                large_texture = {
+                    "name": name,
+                    "image": image,
+                    "width": width,
+                    "height": height,
+                    "tile_size": tile_size,
+                    "tile_x": tile_x,
+                    "tile_y": tile_y,
+                }
                 if tile.casefold() in names:
+                    existing = names[tile.casefold()]
+                    if existing.get("_large_texture") != large_texture:
+                        collisions.append(
+                            f"large texture tile name {tile} conflicts with declared texture {existing.get('name', tile)}"
+                        )
                     continue
                 textures.append({
                     "name": tile,
@@ -67,17 +98,11 @@ def _expand_large_textures(contract: dict[str, Any]) -> None:
                     "modes": list(atlas.get("modes", [])),
                     "alpha_threshold": atlas.get("alpha_threshold", 128),
                     "require_masked_pixels": atlas.get("require_masked_pixels", True),
-                    "_large_texture": {
-                        "name": name,
-                        "image": image,
-                        "width": width,
-                        "height": height,
-                        "tile_size": tile_size,
-                        "tile_x": tile_x,
-                        "tile_y": tile_y,
-                    },
+                    "_large_texture": large_texture,
                 })
-                names.add(tile.casefold())
+                names[tile.casefold()] = textures[-1]
+    if collisions:
+        raise ContractError(collisions)
     contract["textures"] = textures
 
 
@@ -113,6 +138,7 @@ def _safe_relative(value: Any, label: str, errors: list[str], *, suffix: str | N
     if not isinstance(value, str) or not value.strip():
         errors.append(f"{label} must be a non-empty relative path")
         return None
+    _qc_text(value, label, errors)
     value = value.replace("\\", "/")
     windows = PureWindowsPath(value)
     if windows.is_absolute() or windows.drive or value.startswith("/") or ".." in Path(value).parts:
@@ -132,6 +158,7 @@ def _unique_names(items: Any, label: str, errors: list[str]) -> set[str]:
         if not isinstance(name, str) or not name.strip():
             errors.append(f"{label}[{index}].name is required")
             continue
+        _qc_text(name, f"{label}[{index}].name", errors)
         key = name.casefold()
         if key in seen:
             errors.append(f"duplicate {label} name: {name}")
@@ -249,8 +276,9 @@ def _validate_static_material_audit(contract: dict[str, Any], errors: list[str])
     if not isinstance(audit, dict):
         errors.append(f"{STATIC_MATERIAL_AUDIT_FIELD} must be an object")
         return
-    if audit.get("schema_version") != 1:
-        errors.append(f"{STATIC_MATERIAL_AUDIT_FIELD}.schema_version must be 1")
+    schema_version = audit.get("schema_version")
+    if schema_version not in {1, 2}:
+        errors.append(f"{STATIC_MATERIAL_AUDIT_FIELD}.schema_version must be 1 or 2")
     if audit.get("status") != "pass":
         errors.append(f"{STATIC_MATERIAL_AUDIT_FIELD}.status must be pass")
     for field in ("source_object", "prepared_object"):
@@ -277,6 +305,13 @@ def _validate_static_material_audit(contract: dict[str, Any], errors: list[str])
                 not isinstance(material.get("token"), str) or not material["token"].strip()
             ):
                 errors.append(f"{label}.token must be a logical texture token")
+        if schema_version == 2:
+            for field in ("geometry_sha256", "material_assignment_sha256"):
+                value = surface.get(field)
+                if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
+                    errors.append(
+                        f"{STATIC_MATERIAL_AUDIT_FIELD}.{surface_name}.{field} must be a lowercase SHA-256"
+                    )
     mapping = audit.get("old_to_new")
     if not isinstance(mapping, list) or not mapping:
         errors.append(f"{STATIC_MATERIAL_AUDIT_FIELD}.old_to_new must be non-empty")
@@ -489,6 +524,17 @@ def validate_contract(
         large_texture_names.add(key)
 
     texture_names = _unique_names(contract["textures"], "textures", errors)
+    namespace_collisions = sorted(large_texture_names & texture_names)
+    if namespace_collisions:
+        errors.append(
+            "logical large-texture names must not collide with physical texture names: "
+            + ", ".join(namespace_collisions)
+        )
+    if isinstance(contract["textures"], list) and len(contract["textures"]) > GOLDSRC_MAX_TEXTURES_PER_MODEL:
+        errors.append(
+            "GoldSrc texture budget exceeded across the complete MDL: "
+            f"{len(contract['textures'])} > {GOLDSRC_MAX_TEXTURES_PER_MODEL}"
+        )
     textures = {item.get("name", "").casefold(): item for item in contract["textures"] if isinstance(item, dict)}
     for index, texture in enumerate(contract["textures"]):
         if not isinstance(texture, dict):
@@ -564,10 +610,36 @@ def validate_contract(
         motion = sequence.setdefault("motion", [])
         if not isinstance(motion, list) or any(axis not in MOTION_AXES for axis in motion):
             errors.append(f"sequence {sequence.get('name', index)} has an invalid motion axis")
+        origin = sequence.get("origin")
+        if origin is not None and not _is_vec3(origin):
+            errors.append(f"sequence {sequence.get('name', index)} has an invalid origin")
+        activity = sequence.get("activity")
+        if activity is not None:
+            if not isinstance(activity, dict):
+                errors.append(f"sequence {sequence.get('name', index)} activity must be an object")
+            else:
+                activity_name = activity.get("name")
+                if not isinstance(activity_name, str) or not _NAME.match(activity_name):
+                    errors.append(
+                        f"sequence {sequence.get('name', index)} activity name must use letters, digits, dot, underscore, or dash"
+                    )
+                weight = activity.get("weight", 1)
+                if not isinstance(weight, int) or isinstance(weight, bool) or weight < 0:
+                    errors.append(f"sequence {sequence.get('name', index)} activity weight must be a non-negative integer")
         for event_index, event in enumerate(sequence.setdefault("events", [])):
             if not isinstance(event, dict) or not isinstance(event.get("frame"), int) or not isinstance(event.get("id"), int):
                 errors.append(f"sequence {sequence.get('name', index)} event {event_index} is invalid")
                 continue
+            options = event.get("options", "")
+            if not isinstance(options, str):
+                errors.append(f"sequence {sequence.get('name', index)} event {event_index} options must be a string")
+            else:
+                _qc_text(
+                    options,
+                    f"sequences[{index}].events[{event_index}].options",
+                    errors,
+                    allow_empty=True,
+                )
             if frame_range and not frame_range[0] <= event["frame"] <= frame_range[1]:
                 errors.append(f"sequence {sequence.get('name', index)} event {event_index} is outside its frame range")
 
@@ -595,6 +667,11 @@ def validate_contract(
     controller_indices = [item.get("index") for item in contract["controllers"] if isinstance(item, dict)]
     if len(controller_indices) != len(set(controller_indices)) or any(not isinstance(index, int) or not 0 <= index <= 4 for index in controller_indices):
         errors.append("controller indices must be unique within 0..4")
+
+    for index, rename in enumerate(bone_renames):
+        if isinstance(rename, dict):
+            _qc_text(rename.get("source"), f"bone_renames[{index}].source", errors)
+            _qc_text(rename.get("target"), f"bone_renames[{index}].target", errors)
 
     bounds = contract.get("bounds")
     if not isinstance(bounds, dict):

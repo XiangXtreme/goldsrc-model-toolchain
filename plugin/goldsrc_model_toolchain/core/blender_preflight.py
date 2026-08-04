@@ -14,6 +14,8 @@ from .material_mapping import (
     STATIC_MATERIAL_AUDIT_PROPERTY,
     distribution_projection,
     inspect_mesh_material_usage,
+    mesh_geometry_signature,
+    mesh_material_assignment_signature,
 )
 from .material_tokens import resolve_texture_token
 from .model_contract import load_contract, validate_contract
@@ -173,6 +175,22 @@ def _evaluated_surface_facts(obj: Any, bpy: Any) -> dict[str, Any]:
         facts["material_distribution"] = list(usage.distribution)
         facts["invalid_material_indices"] = list(usage.invalid_indices)
         facts["triangles"] = usage.triangles
+        try:
+            facts["geometry_sha256"] = mesh_geometry_signature(
+                mesh, transform=getattr(evaluated, "matrix_world", None),
+            )
+            facts["material_assignment_sha256"] = mesh_material_assignment_signature(
+                mesh, usage=usage,
+            )
+            facts["token_assignment_sha256"] = mesh_material_assignment_signature(
+                mesh, usage=usage, use_tokens=True,
+            )
+        except (AttributeError, TypeError, ValueError):
+            # Lightweight host tests may expose only counts. A schema-2 audit
+            # still fails closed when these signatures are unavailable.
+            facts["geometry_sha256"] = None
+            facts["material_assignment_sha256"] = None
+            facts["token_assignment_sha256"] = None
     finally:
         evaluated.to_mesh_clear()
     return facts
@@ -248,6 +266,18 @@ def _inspect_static_material_audit(
         failures.append({"surface": "source_evaluated", "reason": "geometry_counts_changed"})
     if _audit_surface_counts(audit["prepared"]) != _audit_surface_counts(prepared_surface):
         failures.append({"surface": "prepared", "reason": "geometry_counts_changed"})
+    source_geometry = audit["source_evaluated"].get("geometry_sha256")
+    if source_geometry and source_geometry != source_surface.get("geometry_sha256"):
+        failures.append({"surface": "source_evaluated", "reason": "geometry_signature_changed"})
+    source_materials = audit["source_evaluated"].get("material_assignment_sha256")
+    if source_materials and source_materials != source_surface.get("material_assignment_sha256"):
+        failures.append({"surface": "source_evaluated", "reason": "face_material_assignment_changed"})
+    prepared_geometry = audit["prepared"].get("geometry_sha256")
+    if prepared_geometry and prepared_geometry != prepared_surface.get("geometry_sha256"):
+        failures.append({"surface": "prepared", "reason": "geometry_signature_changed"})
+    prepared_materials = audit["prepared"].get("material_assignment_sha256")
+    if prepared_materials and prepared_materials != prepared_surface.get("token_assignment_sha256"):
+        failures.append({"surface": "prepared", "reason": "face_material_assignment_changed"})
     if source_surface.get("invalid_material_indices"):
         failures.append({
             "surface": "source_evaluated", "reason": "invalid_material_indices",

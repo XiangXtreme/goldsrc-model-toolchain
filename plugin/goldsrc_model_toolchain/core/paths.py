@@ -35,6 +35,18 @@ def resolve_artifact_root(path: Path | str) -> Path:
     return ensure_outside_skill_tree(path, label="Artifact directory")
 
 
+def resolve_contained_path(root: Path | str, child: Path | str) -> Path:
+    """Resolve one child path and reject absolute or traversal escapes."""
+
+    resolved_root = Path(root).expanduser().resolve()
+    candidate = (resolved_root / Path(child)).resolve()
+    try:
+        candidate.relative_to(resolved_root)
+    except ValueError as exc:
+        raise ValueError(f"path must stay inside {resolved_root}: {child}") from exc
+    return candidate
+
+
 def _unique(paths: Iterable[Path | None]) -> list[Path]:
     result: list[Path] = []
     seen: set[str] = set()

@@ -18,6 +18,8 @@ from ..core.material_mapping import (
     aggregate_token_triangles,
     distribution_projection,
     inspect_mesh_material_usage,
+    mesh_geometry_signature,
+    mesh_material_assignment_signature,
 )
 from ..core.material_tokens import resolve_texture_token
 from ..core.model_contract import load_contract, validate_contract, write_qc
@@ -282,6 +284,12 @@ def _write_triangles(handle, obj, contract: dict, bone_ids: dict[str, int]) -> d
             "object": obj.name,
             "triangles": count,
             "materials": sorted(tokens),
+            "evaluated_geometry_sha256": mesh_geometry_signature(
+                mesh, transform=evaluated.matrix_world,
+            ),
+            "evaluated_token_assignment_sha256": mesh_material_assignment_signature(
+                mesh, usage=usage, use_tokens=True,
+            ),
             "evaluated_uv": uv_facts,
             "evaluated_material_slots": [
                 material.name for material in materials if material is not None
@@ -314,6 +322,12 @@ def _evaluated_material_surface(obj) -> dict:
             "vertices": len(mesh.vertices),
             "polygons": len(mesh.polygons),
             "triangles": usage.triangles,
+            "geometry_sha256": mesh_geometry_signature(
+                mesh, transform=evaluated.matrix_world,
+            ),
+            "material_assignment_sha256": mesh_material_assignment_signature(
+                mesh, usage=usage,
+            ),
             "materials": list(usage.distribution),
             "invalid_material_indices": list(usage.invalid_indices),
         }
@@ -377,6 +391,18 @@ def _validate_static_material_export(
     }
     if expected_source_counts != actual_source_counts:
         failures.append({"surface": "source_evaluated", "reason": "geometry_counts_changed"})
+    expected_source_geometry = audit["source_evaluated"].get("geometry_sha256")
+    if expected_source_geometry and expected_source_geometry != source_actual.get("geometry_sha256"):
+        failures.append({"surface": "source_evaluated", "reason": "geometry_signature_changed"})
+    expected_source_materials = audit["source_evaluated"].get("material_assignment_sha256")
+    if expected_source_materials and expected_source_materials != source_actual.get("material_assignment_sha256"):
+        failures.append({"surface": "source_evaluated", "reason": "face_material_assignment_changed"})
+    expected_prepared_geometry = audit["prepared"].get("geometry_sha256")
+    if expected_prepared_geometry and expected_prepared_geometry != facts.get("evaluated_geometry_sha256"):
+        failures.append({"surface": "prepared", "reason": "geometry_signature_changed"})
+    expected_prepared_materials = audit["prepared"].get("material_assignment_sha256")
+    if expected_prepared_materials and expected_prepared_materials != facts.get("evaluated_token_assignment_sha256"):
+        failures.append({"surface": "prepared", "reason": "face_material_assignment_changed"})
     if int(audit["prepared"].get("triangles", 0)) != int(facts.get("triangles", 0)):
         failures.append({"surface": "smd", "reason": "author_triangle_count_changed"})
     if source_actual.get("invalid_material_indices"):
@@ -738,7 +764,12 @@ def export_contract(contract_path: str | Path, artifacts_dir: str | Path) -> dic
     armature = _armature_for_contract(contract, [obj for _source, obj, _label in resolved])
     scene = bpy.context.scene
     previous_frame = scene.frame_current
-    previous_action = armature.animation_data.action if armature and armature.animation_data else None
+    had_animation_data = bool(armature and armature.animation_data)
+    previous_action = armature.animation_data.action if had_animation_data else None
+    previous_action_slot = (
+        getattr(armature.animation_data, "action_slot", None)
+        if had_animation_data else None
+    )
     previous_basis = {
         bone.name: bone.matrix_basis.copy() for bone in armature.pose.bones
     } if armature else {}
@@ -777,8 +808,12 @@ def export_contract(contract_path: str | Path, artifacts_dir: str | Path) -> dic
         if armature:
             for bone in armature.pose.bones:
                 bone.matrix_basis = previous_basis[bone.name]
-        if armature and previous_action:
-            _bind_action(armature, previous_action)
+        if armature and had_animation_data:
+            armature.animation_data.action = previous_action
+            if previous_action is not None and previous_action_slot is not None:
+                armature.animation_data.action_slot = previous_action_slot
+        elif armature and armature.animation_data:
+            armature.animation_data_clear()
         scene.frame_set(previous_frame)
     plan = build_export_plan(contract, export_plan)
     omitted_tiles = {

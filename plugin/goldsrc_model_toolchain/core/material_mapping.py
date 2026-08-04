@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import struct
 from dataclasses import dataclass
 from typing import Any
 
@@ -83,6 +86,50 @@ def inspect_mesh_material_usage(mesh: Any) -> MeshMaterialUsage:
         invalid_indices=invalid,
         triangles=sum(triangle_counts),
     )
+
+
+def mesh_geometry_signature(mesh: Any, *, transform: Any | None = None) -> str:
+    """Hash ordered positions and face winding for one evaluated mesh."""
+
+    vertices = tuple(getattr(mesh, "vertices", ()))
+    loops = tuple(getattr(mesh, "loops", ()))
+    polygons = tuple(getattr(mesh, "polygons", ()))
+    digest = hashlib.sha256()
+    digest.update(struct.pack("<QQQ", len(vertices), len(loops), len(polygons)))
+    for vertex in vertices:
+        coordinate = transform @ vertex.co if transform is not None else vertex.co
+        coordinates = tuple(float(value) for value in coordinate)
+        digest.update(struct.pack("<Q", len(coordinates)))
+        digest.update(struct.pack(f"<{len(coordinates)}d", *coordinates))
+    for polygon in polygons:
+        indices = tuple(int(value) for value in polygon.vertices)
+        digest.update(struct.pack("<Q", len(indices)))
+        if indices:
+            digest.update(struct.pack(f"<{len(indices)}Q", *indices))
+    return digest.hexdigest()
+
+
+def mesh_material_assignment_signature(
+    mesh: Any,
+    *,
+    usage: MeshMaterialUsage | None = None,
+    use_tokens: bool = False,
+) -> str:
+    """Hash the material identity or logical token assigned to every ordered face."""
+
+    usage = usage or inspect_mesh_material_usage(mesh)
+    values = []
+    for index in usage.polygon_indices:
+        if index < 0 or index >= len(usage.materials):
+            values.append({"invalid_slot": index})
+        elif use_tokens:
+            values.append({"token": explicit_material_token(usage.materials[index])})
+        else:
+            values.append(material_identity(usage.materials[index]))
+    payload = json.dumps(
+        values, sort_keys=True, ensure_ascii=False, separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def distribution_projection(

@@ -55,9 +55,11 @@ def _rig():
     curve.keyframe_points.add(1)
     curve.keyframe_points[0].co = (0, 0)
     curve.update()
+    secondary_slot = action.slots.new("OBJECT", armature.name + "_AuthorSlot")
+    strip.channelbags.new(secondary_slot)
     armature.animation_data_create()
     armature.animation_data.action = action
-    armature.animation_data.action_slot = slot
+    armature.animation_data.action_slot = secondary_slot
     return armature
 
 
@@ -180,6 +182,9 @@ def _run_features(root: Path) -> dict:
     contract = root / "model_contract.json"
     contract.write_text(json.dumps(_contract(), indent=2) + "\n", encoding="utf-8")
     reports = {}
+    armature = bpy.data.objects["features_ARM"]
+    author_action = armature.animation_data.action
+    author_slot = armature.animation_data.action_slot
     for stage, filename in (
         ("PREFLIGHT", "preflight.json"), ("EXPORT", "export.json"),
         ("COMPILE", "compile_sven.json"), ("INSPECT", "mdl_inspection.json"),
@@ -191,6 +196,30 @@ def _run_features(root: Path) -> dict:
         report = json.loads((root / filename).read_text(encoding="utf-8"))
         if result != {"FINISHED"} or report.get("status") != "pass":
             raise RuntimeError(f"feature {stage} failed: {result} {report}")
+        if stage == "EXPORT":
+            restored_action = armature.animation_data.action
+            restored_slot = armature.animation_data.action_slot
+            if (
+                restored_action is None
+                or restored_action.as_pointer() != author_action.as_pointer()
+                or restored_slot is None
+                or restored_slot.identifier != author_slot.identifier
+            ):
+                raise RuntimeError(
+                    "EXPORT did not restore the author Action and Action Slot: "
+                    f"before=({author_action.name}, {author_slot.identifier}) "
+                    f"after=({getattr(restored_action, 'name', None)}, "
+                    f"{getattr(restored_slot, 'identifier', None)})"
+                )
+            armature.animation_data.action = None
+            result_none = bpy.ops.goldsrc_toolchain.execute_stage(
+                stage="EXPORT", contract_path=str(contract), artifacts_dir=str(root),
+                report_path="export_action_none.json",
+            )
+            if result_none != {"FINISHED"} or armature.animation_data.action is not None:
+                raise RuntimeError("EXPORT left the last exported Action on an Armature whose author Action was None")
+            armature.animation_data.action = author_action
+            armature.animation_data.action_slot = author_slot
         reports[stage] = report
     inspection = reports["INSPECT"]["inspections"]["sven"]
     api = bpy.app.driver_namespace["goldsrc_model_toolchain"]
@@ -213,6 +242,7 @@ def _run_features(root: Path) -> dict:
         "texture_flags": {item["name"]: item["flag_names"] for item in inspection["textures"]},
         "controllers": len(inspection["controllers"]),
         "attachments": len(inspection["attachments"]),
+        "author_action_state_restored": True,
         "actions": reports["ROUNDTRIP"]["facts"]["actions"],
         "action_matrix_audits": reports["ROUNDTRIP"]["facts"]["action_matrix_audits"],
         "weighted_vertex_audit": reports["ROUNDTRIP"]["facts"]["weighted_vertex_audit"],

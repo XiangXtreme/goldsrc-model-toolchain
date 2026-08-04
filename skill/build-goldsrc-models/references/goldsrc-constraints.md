@@ -20,7 +20,7 @@
 
 - Use uncompressed 8-bit indexed BMP with a 256-entry palette.
 - Record used-index frequencies, visible color count, and palette-weighted luminance from the final BMP. Single-color, all-black, or fully transparent results require visual review but are not automatically artistic failures.
-- Keep each physical MDL texture width and height at multiples of 16 and no larger than 512. A logical atlas may exceed 512 only when it is divisible into no more than 64 possible `512x512` tiles; export-plan version 2 embeds only geometry/skin-referenced tiles and omits the rest. The atlas is never embedded as one oversized texture.
+- Keep each physical MDL texture width and height at multiples of 16 and no larger than 512. A logical atlas may exceed 512 only when it is divisible into no more than 64 possible `512x512` tiles; the complete MDL still has one shared 64-texture budget across all atlases and ordinary textures. Export-plan version 2 embeds only geometry/skin-referenced tiles and omits the rest. Logical atlas tokens, ordinary texture names, and generated tile names must not collide. The atlas is never embedded as one oversized texture.
 - The SMD material token must match the compiled texture filename, including `.bmp` where expected.
 - For masked textures, reserve palette index 255 and use blue `(0, 0, 255)` for the transparent entry.
 - Tested MDL v10 texture flags are flatshade `0x0001`, chrome `0x0002`, fullbright `0x0004`, additive `0x0020`, and masked `0x0040`.
