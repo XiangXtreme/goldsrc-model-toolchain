@@ -181,6 +181,7 @@ def _apply_texture_selection(contract: dict, texture_plan: dict, phase: str) -> 
 def apply_export_plan_data(contract: dict, plan: dict, root: Path, *, phase: str) -> dict:
     """Apply an already decoded plan to a copy of a normalized contract."""
 
+    root = Path(root).resolve()
     if not isinstance(plan, dict):
         raise _plan_error(phase, "export plan root must be an object")
     version = plan.get("version", 1)
@@ -203,6 +204,7 @@ def apply_export_plan_data(contract: dict, plan: dict, root: Path, *, phase: str
 def apply_export_plan(contract: dict, root: Path, *, phase: str) -> dict:
     """Load and apply the contract-owned plan when EXPORT has produced one."""
 
+    root = Path(root).resolve()
     plan_path = (root / contract.get("outputs", {}).get("export_plan", "export_plan.json")).resolve()
     if root not in plan_path.parents or not plan_path.is_file():
         return contract

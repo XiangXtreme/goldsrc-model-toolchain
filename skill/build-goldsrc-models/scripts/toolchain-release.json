@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "repository": "https://github.com/XiangXtreme/goldsrc-model-toolchain",
-  "tag": "v1.4.0",
-  "asset": "goldsrc_model_toolchain-1.4.0-windows-x64.zip",
-  "download_url": "https://github.com/XiangXtreme/goldsrc-model-toolchain/releases/download/v1.4.0/goldsrc_model_toolchain-1.4.0-windows-x64.zip",
-  "sha256": "fd5ca3e4fcb0db10b3680e10f547cc33cca6b1bf8e5ed935c56cc6a5d0cd6dfb",
+  "tag": "v1.4.1",
+  "asset": "goldsrc_model_toolchain-1.4.1-windows-x64.zip",
+  "download_url": "https://github.com/XiangXtreme/goldsrc-model-toolchain/releases/download/v1.4.1/goldsrc_model_toolchain-1.4.1-windows-x64.zip",
+  "sha256": "3260492af90420b730b353b8c6dcc95d74afea0a83c1ba3dbae0b98280ea39ce",
   "extension_id": "goldsrc_model_toolchain",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "api_version": 1,
   "blender": "5.2.x",
   "platform": "windows-x64"

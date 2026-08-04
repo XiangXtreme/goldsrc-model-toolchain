@@ -68,14 +68,14 @@ class RuntimeAPI:
         compiler = Path(__file__).resolve().parent / "bin" / "windows-x64" / "studiomdl.exe"
         return {
             "id": "goldsrc_model_toolchain",
-            "version": "1.4.0",
+            "version": "1.4.1",
             "api_version": 1,
             "blender": "5.2.x",
             "platform": "windows-x64",
             "distribution": "public_github_release",
             "repository": "https://github.com/XiangXtreme/goldsrc-model-toolchain",
-            "release": "v1.4.0",
-            "public_compatibility_baseline": "v1.4.0",
+            "release": "v1.4.1",
+            "public_compatibility_baseline": "v1.4.1",
             "stages": list(PUBLIC_STAGES),
             "formats": {"smd": 1, "mdl": 10, "qc": True, "indexed_bmp": True},
             "roundtrip_parser": "SourceIO 5.5.4 derived GoldSrc-only reader",

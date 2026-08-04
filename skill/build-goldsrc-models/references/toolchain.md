@@ -6,13 +6,13 @@ The Blender Extension is maintained publicly at <https://github.com/XiangXtreme/
 
 The pinned validated release is:
 
-- Extension `goldsrc_model_toolchain` `1.4.0`
+- Extension `goldsrc_model_toolchain` `1.4.1`
 - API version `1`
-- GitHub tag `v1.4.0`
+- GitHub tag `v1.4.1`
 - Blender `5.2.x`, Windows x64
 - Asset and SHA-256 recorded in `scripts/toolchain-release.json`
 
-The `v1.4.0` archive contains the selected-static quick path and its validation capabilities. For large-texture or SMD-budget work, still require `capabilities()["features"]["large_texture_tiling"]` and `capabilities()["features"]["smd_budget_split"]`; use the sparse-atlas fast path only when `large_texture_tiling.sparse_compiled_tiles` is true. Consolidated static preflight additionally checks `preflight_material_texture_token`, `evaluated_material_mapping_audit`, and `export_time_triangulation`; decoded render comparison checks `roundtrip_decoded_pixel_hash`. Capability checks remain authoritative even when the version is compatible.
+The `v1.4.1` archive contains the selected-static quick path and its validation capabilities. For large-texture or SMD-budget work, still require `capabilities()["features"]["large_texture_tiling"]` and `capabilities()["features"]["smd_budget_split"]`; use the sparse-atlas fast path only when `large_texture_tiling.sparse_compiled_tiles` is true. Consolidated static preflight additionally checks `preflight_material_texture_token`, `evaluated_material_mapping_audit`, and `export_time_triangulation`; decoded render comparison checks `roundtrip_decoded_pixel_hash`. Capability checks remain authoritative even when the version is compatible.
 
 Run `python scripts/install_toolchain.py` to inspect the installed runtime. Add `--apply` only when the Extension is missing, older, or reports another API. A newer API-1 version is accepted with a compatibility warning and is never downgraded automatically.
 
@@ -77,6 +77,8 @@ api.create_visual_contact_sheet(
 Each item supplies `path`, `label`, and `detail`. Write outputs to the active artifact directory. Use equal-time labels for ordinary Action sampling and event labels for physical simulations. The compositor contains images without cropping and places text outside image areas, but its scaled result remains an overview rather than full-resolution visual evidence.
 
 Version `1.4.0` adds export-plan version 2 sparse atlas selection, preflight/export material-token parity, audited evaluated-to-prepared material remapping, export-time evaluated-mesh triangulation warnings, decoded RGBA hashes, compact persisted reports, static analysis/preparation, isolated readback, strict pipeline orchestration, and unified visual comparison. `preview_hashes` remains the PNG artifact hash list for compatibility; `preview_pixel_hashes` and each preview's `pixel_sha256` are authoritative for image equality. Contact-sheet layouts add `source_pixel_sha256` per cell.
+
+Version `1.4.1` normalizes artifact roots before checking export-plan SMD containment. This preserves the same security boundary when Windows reports an equivalent root through an 8.3 or other non-canonical temporary-directory path.
 
 High-level static API:
 

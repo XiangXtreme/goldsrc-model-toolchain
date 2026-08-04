@@ -19,7 +19,7 @@ class WorkspaceValidationTests(unittest.TestCase):
         self.assertEqual(report["status"], "pass", report)
         self.assertEqual(report["skill"]["source"], "skill/build-goldsrc-models")
         self.assertEqual(report["plugin"]["source"], "plugin/goldsrc_model_toolchain")
-        self.assertEqual(report["plugin"]["version"], "1.4.0")
+        self.assertEqual(report["plugin"]["version"], "1.4.1")
 
     def test_rejects_mismatched_skill_release(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -36,11 +36,11 @@ class WorkspaceValidationTests(unittest.TestCase):
             )
             (root / "plugin").mkdir()
             (root / "plugin" / "blender_manifest.toml").write_text(
-                'id = "goldsrc_model_toolchain"\nversion = "1.4.0"\nblender_version_min = "5.2.0"\n',
+                'id = "goldsrc_model_toolchain"\nversion = "1.4.1"\nblender_version_min = "5.2.0"\n',
                 encoding="utf-8",
             )
             (root / "tool-manifest.json").write_text(
-                json.dumps({"bundles": {"goldsrc_model_toolchain": {"root": "plugin", "version": "1.4.0"}}}),
+                json.dumps({"bundles": {"goldsrc_model_toolchain": {"root": "plugin", "version": "1.4.1"}}}),
                 encoding="utf-8",
             )
             report = validate(root)

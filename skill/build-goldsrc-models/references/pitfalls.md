@@ -495,4 +495,4 @@ Use this as a symptom-driven index. Each entry records a reproduced failure, not
 - **Reliable approach:** use at most three columns for the ordinary five-point overview, put Action/frame or event labels in caption bands outside images, preserve every original PNG with both artifact and decoded-pixel hashes, and retain a JSON frame-to-cell mapping.
 - **Avoid:** one ultra-wide row, drawing labels over the model, deleting source stills after composition, or labeling physical samples as quarters when they are event-selected.
 - **Verify:** inspect the contact sheet first, then open suspicious source frames at full resolution; confirm cell paths, byte hashes, `source_pixel_sha256`, labels, and image/caption rectangles in the layout JSON. Repeat `ROUNDTRIP` and reject stale sheets.
-- **Evidence:** Toolchain `1.4.0` compositor unit tests, clean Blender 5.2 five-stage fixture, repeated roundtrip, and live official Blender MCP API regression.
+- **Evidence:** Toolchain `1.4.1` compositor unit tests, clean Blender 5.2 five-stage fixture, repeated roundtrip, and live official Blender MCP API regression.

@@ -15,12 +15,12 @@ SPEC.loader.exec_module(INSTALLER)
 
 
 class InstallerTests(unittest.TestCase):
-    def test_release_manifest_is_pinned_to_public_v140(self) -> None:
+    def test_release_manifest_is_pinned_to_public_v141(self) -> None:
         release = INSTALLER.load_release()
         self.assertEqual(release["repository"], "https://github.com/XiangXtreme/goldsrc-model-toolchain")
-        self.assertEqual(release["tag"], "v1.4.0")
-        self.assertEqual(release["asset"], "goldsrc_model_toolchain-1.4.0-windows-x64.zip")
-        self.assertEqual(release["sha256"], "fd5ca3e4fcb0db10b3680e10f547cc33cca6b1bf8e5ed935c56cc6a5d0cd6dfb")
+        self.assertEqual(release["tag"], "v1.4.1")
+        self.assertEqual(release["asset"], "goldsrc_model_toolchain-1.4.1-windows-x64.zip")
+        self.assertEqual(release["sha256"], "3260492af90420b730b353b8c6dcc95d74afea0a83c1ba3dbae0b98280ea39ce")
         self.assertEqual(release["api_version"], 1)
         self.assertRegex(release["sha256"], r"^[0-9a-f]{64}$")
 
@@ -33,7 +33,7 @@ class InstallerTests(unittest.TestCase):
         )
         self.assertEqual(
             INSTALLER.version_compatibility({"id": "goldsrc_model_toolchain", "version": "1.4.0", "api_version": 1}, release),
-            "validated",
+            "upgrade_required",
         )
         self.assertEqual(
             INSTALLER.version_compatibility({"id": "goldsrc_model_toolchain", "version": "1.4.0-dev", "api_version": 1}, release),
@@ -41,6 +41,10 @@ class InstallerTests(unittest.TestCase):
         )
         self.assertEqual(
             INSTALLER.version_compatibility({"id": "goldsrc_model_toolchain", "version": "1.4.1", "api_version": 1}, release),
+            "validated",
+        )
+        self.assertEqual(
+            INSTALLER.version_compatibility({"id": "goldsrc_model_toolchain", "version": "1.4.2", "api_version": 1}, release),
             "compatible_unregressed_version",
         )
         self.assertEqual(

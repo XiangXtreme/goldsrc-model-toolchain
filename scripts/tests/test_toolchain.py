@@ -1082,6 +1082,8 @@ class CompilerIntegrationTests(unittest.TestCase):
             used_tile = tile_name("atlas.bmp", 0, 0)
             reference = root / "reference.smd"
             reference.write_text(REFERENCE_SMD.replace("base.bmp", used_tile), encoding="utf-8")
+            root_alias = root / ".." / root.name
+            self.assertNotEqual(root_alias, root_alias.resolve())
             plan = build_export_plan(normalized, [{
                 "contract_source": "reference.smd",
                 "compiled_sources": ["reference.smd"],
@@ -1089,7 +1091,7 @@ class CompilerIntegrationTests(unittest.TestCase):
                 "large_texture_tiling": [{"atlas": "atlas.bmp", "tiles": [used_tile]}],
             }])
 
-            effective = apply_export_plan_data(normalized, plan, root, phase="COMPILE")
+            effective = apply_export_plan_data(normalized, plan, root_alias, phase="COMPILE")
 
             self.assertEqual(plan["version"], 2)
             self.assertEqual(plan["textures"]["omitted_unused_large_tiles"], [omitted_tile])
